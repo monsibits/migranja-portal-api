@@ -29,9 +29,254 @@ const EVENT_TYPES = ["Wedding", "Debut", "Birthday", "Christening", "Corporate",
 const VENUES = ["Any", "Ballroom", "The Nook", "Amore Garden"];
 const SHIFT_ROLES = ["Venue manager", "Event coordinator", "Floor supervisor", "Staff", "Kitchen", "Other"];
 const COMMON_PASSWORDS = new Set([
-  "password123", "password1234", "admin12345", "qwerty12345", "iloveyou123",
-  "welcome123", "changeme123", "letmein123", "1234567890", "123456789a",
-  "migranja123", "philippines1", "password1!", "abc1234567"
+  "!qaz2wsx", "000000", "00000000", "0987654321", "1020304050", "111111",
+  "11111111", "1111111111", "112233", "11223344", "1122334455", "121212",
+  "12121212", "1212121212", "123123123", "12341234", "123412345", "123456",
+  "1234567", "12345678", "123456789", "1234567890", "12345678910", "123456789a",
+  "1q2w3e4r", "1q2w3e4r5t", "1qaz2wsx", "1qaz2wsx3edc", "1qazxsw2", "654321",
+  "987654321", "9876543210", "aa123456", "aa12345678", "aa123456789", "abc",
+  "abc!", "abc1", "abc1!", "abc12", "abc12!", "abc123",
+  "abc123!", "abc1234", "abc12345", "abc123456", "abc1234567", "abc2020",
+  "abc2021", "abc2022", "abc2023", "abc2024", "abc2025", "abc2026",
+  "abcabcabc", "abcd1234", "abcd12345", "abcdabcd", "access", "access123",
+  "admin", "admin!", "admin1", "admin1!", "admin12", "admin12!",
+  "admin123", "admin123!", "admin1234", "admin12345", "admin123456", "admin2020",
+  "admin2021", "admin2022", "admin2023", "admin2024", "admin2025", "admin2026",
+  "adminadmin", "adminadmin1", "administrator", "always", "always123", "amanda",
+  "amanda123", "amen", "amen12345", "andrea", "andrea123", "andrew",
+  "andrew123", "android123", "apple", "apple1234", "arsenal", "arsenal123",
+  "asdf1234", "asdf12345", "asdfghjkl", "asdfghjkl;", "ashley", "ashley123",
+  "autumn", "autumn123", "azerty", "azerty123", "baby", "baby12345",
+  "backup", "backup!", "backup1", "backup1!", "backup12", "backup12!",
+  "backup123", "backup123!", "backup1234", "backup12345", "backup123456", "backup2020",
+  "backup2021", "backup2022", "backup2023", "backup2024", "backup2025", "backup2026",
+  "banana", "banana123", "barcelona", "barcelona1", "baseball", "baseball!",
+  "baseball1", "baseball1!", "baseball12", "baseball12!", "baseball123", "baseball123!",
+  "baseball1234", "baseball12345", "baseball123456", "baseball2020", "baseball2021", "baseball2022",
+  "baseball2023", "baseball2024", "baseball2025", "baseball2026", "batangas1", "batman",
+  "batman!", "batman1", "batman1!", "batman12", "batman12!", "batman123",
+  "batman123!", "batman1234", "batman12345", "batman123456", "batman2020", "batman2021",
+  "batman2022", "batman2023", "batman2024", "batman2025", "batman2026", "beauty",
+  "beauty123", "bitcoin", "bitcoin123", "blessed", "blessed123", "booking",
+  "booking!", "booking1", "booking1!", "booking12", "booking12!", "booking123",
+  "booking123!", "booking1234", "booking12345", "booking123456", "booking2020", "booking2021",
+  "booking2022", "booking2023", "booking2024", "booking2025", "booking2026", "burger",
+  "burger123", "buster", "buster123", "cavite", "cavite!", "cavite1",
+  "cavite1!", "cavite12", "cavite12!", "cavite123", "cavite123!", "cavite1234",
+  "cavite12345", "cavite123456", "cavite2020", "cavite2021", "cavite2022", "cavite2023",
+  "cavite2024", "cavite2025", "cavite2026", "cebu", "cebu12345", "champion",
+  "champion1", "changeme", "changeme!", "changeme1", "changeme1!", "changeme12",
+  "changeme12!", "changeme123", "changeme123!", "changeme1234", "changeme12345", "changeme123456",
+  "changeme2020", "changeme2021", "changeme2022", "changeme2023", "changeme2024", "changeme2025",
+  "changeme2026", "charles", "charles123", "charlie", "charlie!", "charlie1",
+  "charlie1!", "charlie12", "charlie12!", "charlie123", "charlie123!", "charlie1234",
+  "charlie12345", "charlie123456", "charlie2020", "charlie2021", "charlie2022", "charlie2023",
+  "charlie2024", "charlie2025", "charlie2026", "chelsea", "chelsea123", "chicken",
+  "chicken123", "coffee", "coffee123", "college", "college123", "company",
+  "company!", "company1", "company1!", "company12", "company12!", "company123",
+  "company123!", "company1234", "company12345", "company123456", "company2020", "company2021",
+  "company2022", "company2023", "company2024", "company2025", "company2026", "computer",
+  "computer!", "computer1", "computer1!", "computer12", "computer12!", "computer123",
+  "computer123!", "computer1234", "computer12345", "computer123456", "computer2020", "computer2021",
+  "computer2022", "computer2023", "computer2024", "computer2025", "computer2026", "cookie",
+  "cookie123", "cowboys", "cowboys123", "daddy", "daddy1234", "daniel",
+  "daniel123", "database", "database1", "davao", "davao1234", "david",
+  "david1234", "december", "december1", "default", "default!", "default1",
+  "default1!", "default12", "default12!", "default123", "default123!", "default1234",
+  "default12345", "default123456", "default2020", "default2021", "default2022", "default2023",
+  "default2024", "default2025", "default2026", "demo", "demo12345", "demoaccount",
+  "dragon", "dragon!", "dragon1", "dragon1!", "dragon12", "dragon12!",
+  "dragon123", "dragon123!", "dragon1234", "dragon12345", "dragon123456", "dragon2020",
+  "dragon2021", "dragon2022", "dragon2023", "dragon2024", "dragon2025", "dragon2026",
+  "elizabeth", "elizabeth1", "events", "events!", "events1", "events1!",
+  "events12", "events12!", "events123", "events123!", "events1234", "events12345",
+  "events123456", "events2020", "events2021", "events2022", "events2023", "events2024",
+  "events2025", "events2026", "facebook", "facebook!", "facebook1", "facebook1!",
+  "facebook12", "facebook12!", "facebook123", "facebook123!", "facebook1234", "facebook12345",
+  "facebook123456", "facebook2020", "facebook2021", "facebook2022", "facebook2023", "facebook2024",
+  "facebook2025", "facebook2026", "family", "family!", "family1", "family1!",
+  "family12", "family12!", "family123", "family123!", "family1234", "family12345",
+  "family123456", "family2020", "family2021", "family2022", "family2023", "family2024",
+  "family2025", "family2026", "february", "february1", "flower", "flower123",
+  "football", "football!", "football1", "football1!", "football12", "football12!",
+  "football123", "football123!", "football1234", "football12345", "football123456", "football2020",
+  "football2021", "football2022", "football2023", "football2024", "football2025", "football2026",
+  "forever", "forever123", "freedom", "freedom!", "freedom1", "freedom1!",
+  "freedom12", "freedom12!", "freedom123", "freedom123!", "freedom1234", "freedom12345",
+  "freedom123456", "freedom2020", "freedom2021", "freedom2022", "freedom2023", "freedom2024",
+  "freedom2025", "freedom2026", "friday", "friday123", "friends", "friends!",
+  "friends1", "friends1!", "friends12", "friends12!", "friends123", "friends123!",
+  "friends1234", "friends12345", "friends123456", "friends2020", "friends2021", "friends2022",
+  "friends2023", "friends2024", "friends2025", "friends2026", "ginger", "ginger123",
+  "godisgood", "godisgood1", "golf", "golf12345", "google", "google!",
+  "google1", "google1!", "google12", "google12!", "google123", "google123!",
+  "google1234", "google12345", "google123456", "google2020", "google2021", "google2022",
+  "google2023", "google2024", "google2025", "google2026", "granja", "granja123",
+  "guest", "guest!", "guest1", "guest1!", "guest12", "guest12!",
+  "guest123", "guest123!", "guest1234", "guest12345", "guest123456", "guest2020",
+  "guest2021", "guest2022", "guest2023", "guest2024", "guest2025", "guest2026",
+  "happy", "happy1234", "harley", "harley123", "hello", "hello!",
+  "hello1", "hello1!", "hello12", "hello12!", "hello123", "hello123!",
+  "hello1234", "hello12345", "hello123456", "hello2020", "hello2021", "hello2022",
+  "hello2023", "hello2024", "hello2025", "hello2026", "hellohello", "hockey",
+  "hockey!", "hockey1", "hockey1!", "hockey12", "hockey12!", "hockey123",
+  "hockey123!", "hockey1234", "hockey12345", "hockey123456", "hockey2020", "hockey2021",
+  "hockey2022", "hockey2023", "hockey2024", "hockey2025", "hockey2026", "hottie",
+  "hottie123", "hunter", "hunter!", "hunter1", "hunter1!", "hunter12",
+  "hunter12!", "hunter123", "hunter123!", "hunter1234", "hunter12345", "hunter123456",
+  "hunter2020", "hunter2021", "hunter2022", "hunter2023", "hunter2024", "hunter2025",
+  "hunter2026", "iloveu", "iloveu1234", "iloveyou", "iloveyou!", "iloveyou1",
+  "iloveyou1!", "iloveyou12", "iloveyou12!", "iloveyou123", "iloveyou123!", "iloveyou1234",
+  "iloveyou12345", "iloveyou123456", "iloveyou2020", "iloveyou2021", "iloveyou2022", "iloveyou2023",
+  "iloveyou2024", "iloveyou2025", "iloveyou2026", "instagram", "instagram!", "instagram1",
+  "instagram1!", "instagram12", "instagram12!", "instagram123", "instagram123!", "instagram1234",
+  "instagram12345", "instagram123456", "instagram2020", "instagram2021", "instagram2022", "instagram2023",
+  "instagram2024", "instagram2025", "instagram2026", "internet", "internet!", "internet1",
+  "internet1!", "internet12", "internet12!", "internet123", "internet123!", "internet1234",
+  "internet12345", "internet123456", "internet2020", "internet2021", "internet2022", "internet2023",
+  "internet2024", "internet2025", "internet2026", "iphone", "iphone123", "james",
+  "james1234", "january", "january123", "jennifer", "jennifer!", "jennifer1",
+  "jennifer1!", "jennifer12", "jennifer12!", "jennifer123", "jennifer123!", "jennifer1234",
+  "jennifer12345", "jennifer123456", "jennifer2020", "jennifer2021", "jennifer2022", "jennifer2023",
+  "jennifer2024", "jennifer2025", "jennifer2026", "jessica", "jessica123", "jesus",
+  "jesus1234", "john", "john12345", "jordan", "jordan123", "jordan1234",
+  "jordan23", "joseph", "joseph123", "joshua", "joshua123", "laguna123",
+  "lakers", "lakers123", "letmein", "letmein!", "letmein1", "letmein1!",
+  "letmein12", "letmein12!", "letmein123", "letmein123!", "letmein1234", "letmein12345",
+  "letmein123456", "letmein2020", "letmein2021", "letmein2022", "letmein2023", "letmein2024",
+  "letmein2025", "letmein2026", "liverpool", "liverpool1", "login", "login!",
+  "login1", "login1!", "login12", "login12!", "login123", "login123!",
+  "login1234", "login12345", "login123456", "login2020", "login2021", "login2022",
+  "login2023", "login2024", "login2025", "login2026", "love", "love12345",
+  "lovely", "lovely123", "loveme", "loveme123", "loveyou", "loveyou123",
+  "macintosh", "makati", "makati123", "manager", "manager!", "manager1",
+  "manager1!", "manager12", "manager12!", "manager123", "manager123!", "manager1234",
+  "manager12345", "manager123456", "manager2020", "manager2021", "manager2022", "manager2023",
+  "manager2024", "manager2025", "manager2026", "mango", "mango1234", "manila",
+  "manila!", "manila1", "manila1!", "manila12", "manila12!", "manila123",
+  "manila123!", "manila1234", "manila12345", "manila123456", "manila2020", "manila2021",
+  "manila2022", "manila2023", "manila2024", "manila2025", "manila2026", "master",
+  "master!", "master1", "master1!", "master12", "master12!", "master123",
+  "master123!", "master1234", "master12345", "master123456", "master2020", "master2021",
+  "master2022", "master2023", "master2024", "master2025", "master2026", "matthew",
+  "matthew123", "melissa", "melissa123", "michael", "michael!", "michael1",
+  "michael1!", "michael12", "michael12!", "michael123", "michael123!", "michael1234",
+  "michael12345", "michael123456", "michael2020", "michael2021", "michael2022", "michael2023",
+  "michael2024", "michael2025", "michael2026", "michelle", "michelle1", "migranja",
+  "migranja!", "migranja1", "migranja1!", "migranja12", "migranja12!", "migranja123",
+  "migranja123!", "migranja1234", "migranja12345", "migranja123456", "migranja2020", "migranja2021",
+  "migranja2022", "migranja2023", "migranja2024", "migranja2025", "migranja2026", "million",
+  "million123", "minecraft", "minecraft!", "minecraft1", "minecraft1!", "minecraft12",
+  "minecraft12!", "minecraft123", "minecraft123!", "minecraft1234", "minecraft12345", "minecraft123456",
+  "minecraft2020", "minecraft2021", "minecraft2022", "minecraft2023", "minecraft2024", "minecraft2025",
+  "minecraft2026", "mommy", "mommy1234", "monday", "monday123", "money",
+  "money1234", "monitor", "monitor123", "monkey", "monkey!", "monkey1",
+  "monkey1!", "monkey12", "monkey12!", "monkey123", "monkey123!", "monkey1234",
+  "monkey12345", "monkey123456", "monkey2020", "monkey2021", "monkey2022", "monkey2023",
+  "monkey2024", "monkey2025", "monkey2026", "mysql", "mysql1234", "naruto",
+  "naruto!", "naruto1", "naruto1!", "naruto12", "naruto12!", "naruto123",
+  "naruto123!", "naruto1234", "naruto12345", "naruto123456", "naruto2020", "naruto2021",
+  "naruto2022", "naruto2023", "naruto2024", "naruto2025", "naruto2026", "netflix",
+  "netflix123", "network", "network123", "nicole", "nicole123", "november1",
+  "office", "office!", "office1", "office1!", "office12", "office12!",
+  "office123", "office123!", "office1234", "office12345", "office123456", "office2020",
+  "office2021", "office2022", "office2023", "office2024", "office2025", "office2026",
+  "oracle", "oracle123", "orange", "orange123", "p@ssw0rd", "p@ssw0rd1",
+  "p@ssword", "p@ssword1", "p@ssword123", "pass", "pass!", "pass1",
+  "pass1!", "pass12", "pass12!", "pass123", "pass123!", "pass1234",
+  "pass12345", "pass123456", "pass2020", "pass2021", "pass2022", "pass2023",
+  "pass2024", "pass2025", "pass2026", "pass@word1", "pass@word123", "passpass",
+  "passpass1", "passw0rd", "passw0rd1", "password", "password!", "password1",
+  "password1!", "password12", "password12!", "password123", "password123!", "password1234",
+  "password12345", "password123456", "password2020", "password2021", "password2022", "password2023",
+  "password2024", "password2025", "password2026", "peace", "peace1234", "pepper",
+  "pepper123", "philippines", "philippines!", "philippines1", "philippines1!", "philippines12",
+  "philippines12!", "philippines123", "philippines123!", "philippines1234", "philippines12345", "philippines123456",
+  "philippines2020", "philippines2021", "philippines2022", "philippines2023", "philippines2024", "philippines2025",
+  "philippines2026", "pilipinas1", "pilipinas123", "pizza", "pizza1234", "pokemon",
+  "pokemon!", "pokemon1", "pokemon1!", "pokemon12", "pokemon12!", "pokemon123",
+  "pokemon123!", "pokemon1234", "pokemon12345", "pokemon123456", "pokemon2020", "pokemon2021",
+  "pokemon2022", "pokemon2023", "pokemon2024", "pokemon2025", "pokemon2026", "postgres",
+  "postgres1", "princess", "princess!", "princess1", "princess1!", "princess12",
+  "princess12!", "princess123", "princess123!", "princess1234", "princess12345", "princess123456",
+  "princess2020", "princess2021", "princess2022", "princess2023", "princess2024", "princess2025",
+  "princess2026", "printer", "printer123", "qazwsx", "qazwsx123", "quezon",
+  "quezon123", "qweasdzxc", "qweasdzxc1", "qwerty", "qwerty!", "qwerty1",
+  "qwerty1!", "qwerty12", "qwerty12!", "qwerty123", "qwerty123!", "qwerty1234",
+  "qwerty12345", "qwerty123456", "qwerty2020", "qwerty2021", "qwerty2022", "qwerty2023",
+  "qwerty2024", "qwerty2025", "qwerty2026", "qwertyuiop", "ranger", "ranger!",
+  "ranger1", "ranger1!", "ranger12", "ranger12!", "ranger123", "ranger123!",
+  "ranger1234", "ranger12345", "ranger123456", "ranger2020", "ranger2021", "ranger2022",
+  "ranger2023", "ranger2024", "ranger2025", "ranger2026", "realmadrid", "richard",
+  "richard123", "robert", "robert123", "root", "root!", "root1",
+  "root1!", "root12", "root12!", "root123", "root123!", "root1234",
+  "root12345", "root123456", "root2020", "root2021", "root2022", "root2023",
+  "root2024", "root2025", "root2026", "rose", "rose12345", "router",
+  "router123", "sample", "sample123", "samsung", "samsung123", "sarah",
+  "sarah1234", "saturday", "saturday1", "school", "school123", "seams",
+  "seams1234", "seamslab", "seamslab1", "secret", "secret!", "secret1",
+  "secret1!", "secret12", "secret12!", "secret123", "secret123!", "secret1234",
+  "secret12345", "secret123456", "secret2020", "secret2021", "secret2022", "secret2023",
+  "secret2024", "secret2025", "secret2026", "security", "security1", "server",
+  "server!", "server1", "server1!", "server12", "server12!", "server123",
+  "server123!", "server1234", "server12345", "server123456", "server2020", "server2021",
+  "server2022", "server2023", "server2024", "server2025", "server2026", "sexy",
+  "sexy12345", "shadow", "shadow!", "shadow1", "shadow1!", "shadow12",
+  "shadow12!", "shadow123", "shadow123!", "shadow1234", "shadow12345", "shadow123456",
+  "shadow2020", "shadow2021", "shadow2022", "shadow2023", "shadow2024", "shadow2025",
+  "shadow2026", "smile", "smile1234", "soccer", "soccer!", "soccer1",
+  "soccer1!", "soccer12", "soccer12!", "soccer123", "soccer123!", "soccer1234",
+  "soccer12345", "soccer123456", "soccer2020", "soccer2021", "soccer2022", "soccer2023",
+  "soccer2024", "soccer2025", "soccer2026", "spotify", "spotify123", "spring",
+  "spring!", "spring1", "spring1!", "spring12", "spring12!", "spring123",
+  "spring123!", "spring1234", "spring12345", "spring123456", "spring2020", "spring2021",
+  "spring2022", "spring2023", "spring2024", "spring2025", "spring2026", "starwars",
+  "starwars1", "starwars123", "stephanie", "stephanie1", "success", "success123",
+  "summer", "summer!", "summer1", "summer1!", "summer12", "summer12!",
+  "summer123", "summer123!", "summer1234", "summer12345", "summer123456", "summer2020",
+  "summer2021", "summer2022", "summer2023", "summer2024", "summer2025", "summer2026",
+  "sunshine", "sunshine!", "sunshine1", "sunshine1!", "sunshine12", "sunshine12!",
+  "sunshine123", "sunshine123!", "sunshine1234", "sunshine12345", "sunshine123456", "sunshine2020",
+  "sunshine2021", "sunshine2022", "sunshine2023", "sunshine2024", "sunshine2025", "sunshine2026",
+  "superman", "superman!", "superman1", "superman1!", "superman12", "superman12!",
+  "superman123", "superman123!", "superman1234", "superman12345", "superman123456", "superman2020",
+  "superman2021", "superman2022", "superman2023", "superman2024", "superman2025", "superman2026",
+  "superuser", "superuser1", "switch", "switch123", "system", "system!",
+  "system1", "system1!", "system12", "system12!", "system123", "system123!",
+  "system1234", "system12345", "system123456", "system2020", "system2021", "system2022",
+  "system2023", "system2024", "system2025", "system2026", "tagaytay", "tagaytay1",
+  "tagaytay123", "temp", "temp!", "temp1", "temp1!", "temp12",
+  "temp12!", "temp123", "temp123!", "temp1234", "temp12345", "temp123456",
+  "temp2020", "temp2021", "temp2022", "temp2023", "temp2024", "temp2025",
+  "temp2026", "temporary1", "test", "test!", "test1", "test1!",
+  "test12", "test12!", "test123", "test123!", "test1234", "test12345",
+  "test123456", "test2020", "test2021", "test2022", "test2023", "test2024",
+  "test2025", "test2026", "testing", "testing1", "testing123", "testpass12",
+  "thomas", "thomas!", "thomas1", "thomas1!", "thomas12", "thomas12!",
+  "thomas123", "thomas123!", "thomas1234", "thomas12345", "thomas123456", "thomas2020",
+  "thomas2021", "thomas2022", "thomas2023", "thomas2024", "thomas2025", "thomas2026",
+  "tigger", "tigger!", "tigger1", "tigger1!", "tigger12", "tigger12!",
+  "tigger123", "tigger123!", "tigger1234", "tigger12345", "tigger123456", "tigger2020",
+  "tigger2021", "tigger2022", "tigger2023", "tigger2024", "tigger2025", "tigger2026",
+  "trustno1", "trustno12", "tulip", "tulip1234", "user", "user!",
+  "user1", "user1!", "user12", "user12!", "user123", "user123!",
+  "user1234", "user12345", "user123456", "user2020", "user2021", "user2022",
+  "user2023", "user2024", "user2025", "user2026", "wedding", "wedding!",
+  "wedding1", "wedding1!", "wedding12", "wedding12!", "wedding123", "wedding123!",
+  "wedding1234", "wedding12345", "wedding123456", "wedding2020", "wedding2021", "wedding2022",
+  "wedding2023", "wedding2024", "wedding2025", "wedding2026", "welcome", "welcome!",
+  "welcome1", "welcome1!", "welcome12", "welcome12!", "welcome123", "welcome123!",
+  "welcome1234", "welcome12345", "welcome123456", "welcome2020", "welcome2021", "welcome2022",
+  "welcome2023", "welcome2024", "welcome2025", "welcome2026", "whatever", "whatever!",
+  "whatever1", "whatever1!", "whatever12", "whatever12!", "whatever123", "whatever123!",
+  "whatever1234", "whatever12345", "whatever123456", "whatever2020", "whatever2021", "whatever2022",
+  "whatever2023", "whatever2024", "whatever2025", "whatever2026", "william", "william123",
+  "windows", "windows123", "winner", "winner123", "winter", "winter!",
+  "winter1", "winter1!", "winter12", "winter12!", "winter123", "winter123!",
+  "winter1234", "winter12345", "winter123456", "winter2020", "winter2021", "winter2022",
+  "winter2023", "winter2024", "winter2025", "winter2026", "xiaomi", "xiaomi123",
+  "yankees", "yankees123", "youtube", "youtube123", "zaq12wsx", "zxcv1234",
+  "zxcv12345", "zxcvbnm", "zxcvbnm,./", "zxcvbnm123"
 ]);
 
 const ACL = {
@@ -44,7 +289,13 @@ const ACL = {
   finances: { read: ["owner"], write: ["owner"] },
   users: { read: ["owner"], write: ["owner"] },
   reports: { read: ["owner", "admin"], write: ["owner"] },
-  audit: { read: ["owner"], write: ["owner"] }
+  audit: { read: ["owner"], write: ["owner"] },
+  sales: { read: ["owner", "admin"], write: ["owner", "admin"] },
+  housekeeping: { read: ["owner", "admin", "staff"], write: ["owner", "admin", "staff"] },
+  inventory: { read: ["owner", "admin", "staff"], write: ["owner", "admin"] },
+  accounting: { read: ["owner"], write: ["owner"] },
+  hr: { read: ["owner", "admin"], write: ["owner", "admin"] },
+  payroll: { read: ["owner"], write: ["owner"] }
 };
 
 const ALLOW_WHILE_PASSWORD_CHANGE = new Set([
@@ -69,6 +320,15 @@ export default {
         message: String(err && err.message ? err.message : err)
       }));
       return json({ error: "Something went wrong. Please try again.", requestId }, 500, request);
+    }
+  },
+  async scheduled(controller, env) {
+    try {
+      const result = await runScheduledSweeps(env);
+      console.log(JSON.stringify({ level: "info", message: "scheduled_sweep", ...result }));
+    } catch (err) {
+      console.error(JSON.stringify({ level: "error", message: "scheduled_sweep_failed", error: String(err && err.message ? err.message : err) }));
+      throw err;
     }
   }
 };
@@ -241,6 +501,11 @@ async function handle(request, env, url, requestId) {
   if (url.pathname === "/api/audit" && request.method === "GET") {
     if (!allow(user, "audit", "read")) return deny(request);
     return listAudit(env, request);
+  }
+
+  if (typeof handleOps === "function") {
+    const opsResponse = await handleOps(request, env, url, user);
+    if (opsResponse) return opsResponse;
   }
 
   return json({ error: "Not found." }, 404, request);
@@ -467,6 +732,20 @@ function vEmail(value) {
   return { value: text };
 }
 
+async function assertActiveStaff(env, staffId) {
+  const staff = await env.DB.prepare("SELECT id, is_active FROM users WHERE id = ?").bind(staffId).first();
+  if (!staff) return "Staff member not found.";
+  if (!staff.is_active) return "That staff account is no longer active.";
+  return null;
+}
+
+async function assertExistingEvent(env, eventId) {
+  if (!eventId) return null;
+  const event = await env.DB.prepare("SELECT id FROM events WHERE id = ?").bind(eventId).first();
+  if (!event) return "Event not found.";
+  return null;
+}
+
 function normalizeEventStatus(value) {
   if (!value) return "Confirmed";
   const found = EVENT_STATUSES.find((item) => item.toLowerCase() === String(value).trim().toLowerCase());
@@ -474,7 +753,8 @@ function normalizeEventStatus(value) {
 }
 
 function csvEscape(value) {
-  const text = value === null || value === undefined ? "" : String(value);
+  let text = value === null || value === undefined ? "" : String(value);
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
   if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
   return text;
 }
@@ -499,7 +779,9 @@ function toExcelXml(rows, columns, sheetName) {
 }
 
 function xmlEscape(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+  let text = String(value ?? "");
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  return text.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 }
 
 async function audit(env, user, action, entity, entityId, detail, request, isSample = 0) {
@@ -520,7 +802,8 @@ async function audit(env, user, action, entity, entityId, detail, request, isSam
       isSample ? 1 : 0
     ).run();
   } catch (err) {
-    console.error(JSON.stringify({ level: "warn", message: "audit_failed", error: String(err && err.message ? err.message : err) }));
+    console.error(JSON.stringify({ level: "error", message: "audit_failed", error: String(err && err.message ? err.message : err) }));
+    throw err;
   }
 }
 
@@ -544,17 +827,28 @@ function auditStmt(env, user, action, entity, entityId, detail, request, isSampl
 
 async function expirePendings(env) {
   const cutoff = new Date(Date.now() - PENDING_DAYS * 86400 * 1000).toISOString();
-  await env.DB.prepare(
+  const result = await env.DB.prepare(
     "UPDATE requests SET status = 'expired' WHERE status = 'pending' AND created_at < ?"
   ).bind(cutoff).run();
+  return (result && result.meta && result.meta.changes) || 0;
 }
 
 async function completePastEvents(env) {
   const today = todayISO();
-  await env.DB.prepare(
+  const result = await env.DB.prepare(
     `UPDATE events SET status = 'Completed'
      WHERE date < ? AND status IN ('Confirmed', 'Setup', 'Booked')`
   ).bind(today).run();
+  return (result && result.meta && result.meta.changes) || 0;
+}
+
+async function runScheduledSweeps(env) {
+  const expired = await expirePendings(env);
+  const completed = await completePastEvents(env);
+  if (expired || completed) {
+    await audit(env, { id: "system", role: "system" }, "sweep", "system", null, `Expired ${expired} pending request(s); completed ${completed} past event(s).`, null, 0);
+  }
+  return { expired, completed };
 }
 
 async function dateVenueTaken(env, date, venue, exceptId) {
@@ -669,8 +963,6 @@ async function revokeSessions(env, userId, exceptSessionId) {
 }
 
 async function getCalendar(url, env, request) {
-  await expirePendings(env);
-  await completePastEvents(env);
   const year = Number(url.searchParams.get("year"));
   const month = Number(url.searchParams.get("month"));
   const thisYear = Number(todayISO().slice(0, 4));
@@ -704,7 +996,6 @@ async function dateStatus(env, iso) {
 
 async function createPublicRequest(request, env) {
   if (!originAllowed(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
-  await expirePendings(env);
   const ip = clientIp(request);
   if (!(await postHourLimit(env, `req:${ip}`, MAX_PUBLIC_POSTS_PER_HOUR))) {
     return json({ error: "Please wait a little before sending another request." }, 429, request);
@@ -716,7 +1007,7 @@ async function createPublicRequest(request, env) {
   }
   const turned = await verifyTurnstile(env, request, body.turnstileToken);
   if (!turned.ok) return json({ error: turned.error }, 400, request);
-  const date = vDate(body.date, { label: "a date" });
+  const date = vDate(body.date, { label: "the date" });
   const name = vStr(body.name, { label: "your name", max: 80 });
   const contact = vContact(body.contact);
   const type = vOneOf(String(body.type || "").trim(), EVENT_TYPES, "event type");
@@ -784,13 +1075,13 @@ async function setupOwner(request, env) {
   const id = existing ? existing.id : randomId();
   if (existing) {
     await env.DB.prepare(
-      `UPDATE users SET email = ?, name = ?, title = 'Owner', password_hash = ?, password_salt = ?, password_set_at = ?, must_change_password = 0, is_active = 1 WHERE id = ?`
-    ).bind(email.value, name.value, hash, salt, now, id).run();
+      `UPDATE users SET email = ?, name = ?, title = 'Owner', password_hash = ?, password_salt = ?, password_set_at = ?, must_change_password = 0, is_active = 1, password_algo = ? WHERE id = ?`
+    ).bind(email.value, name.value, hash, salt, now, PASSWORD_ALGO, id).run();
   } else {
     await env.DB.prepare(
-      `INSERT INTO users (id, email, name, role, title, password_hash, password_salt, password_set_at, must_change_password, is_active, created_at)
-       VALUES (?, ?, ?, 'owner', 'Owner', ?, ?, ?, 0, 1, ?)`
-    ).bind(id, email.value, name.value, hash, salt, now, now).run();
+      `INSERT INTO users (id, email, name, role, title, password_hash, password_salt, password_set_at, must_change_password, is_active, created_at, password_algo)
+       VALUES (?, ?, ?, 'owner', 'Owner', ?, ?, ?, 0, 1, ?, ?)`
+    ).bind(id, email.value, name.value, hash, salt, now, now, PASSWORD_ALGO).run();
   }
   const session = await createSession(env, id);
   return json({
@@ -890,8 +1181,8 @@ async function changePassword(request, env, user) {
   const now = isoNow();
   await env.DB.batch([
     env.DB.prepare(
-      "UPDATE users SET password_hash = ?, password_salt = ?, password_set_at = ?, must_change_password = 0 WHERE id = ?"
-    ).bind(nextHash, salt, now, user.id),
+      "UPDATE users SET password_hash = ?, password_salt = ?, password_set_at = ?, must_change_password = 0, password_algo = ? WHERE id = ?"
+    ).bind(nextHash, salt, now, PASSWORD_ALGO, user.id),
     env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(user.id),
     auditStmt(env, user, "password_change", "users", user.id, "Password changed; sessions revoked", request)
   ]);
@@ -906,7 +1197,6 @@ function eventColumns(role) {
 }
 
 async function listEvents(env, request, user) {
-  await completePastEvents(env);
   const url = new URL(request.url);
   const status = url.searchParams.get("status") || "";
   const range = url.searchParams.get("range") || "";
@@ -942,10 +1232,10 @@ async function listEvents(env, request, user) {
   return json({ events: results || [] }, 200, request);
 }
 
-function readEventBody(body, { partial = false } = {}) {
+function readEventBody(body, { partial = false, role = "owner" } = {}) {
   const out = {};
   if (!partial || body.date !== undefined) {
-    const date = vDate(body.date, { label: "a date" });
+    const date = vDate(body.date, { label: "the date" });
     if (date.error) return date;
     out.date = date.value;
   }
@@ -984,12 +1274,15 @@ function readEventBody(body, { partial = false } = {}) {
     if (!status) return { error: "Please pick a valid status." };
     out.status = status;
   }
-  if (!partial || body.fee !== undefined) {
+  if (body.fee !== undefined || body.deposit !== undefined) {
+    if (role !== "owner") return { error: "Only the owner can set fees and deposits." };
+  }
+  if (role === "owner" && (!partial || body.fee !== undefined)) {
     const fee = vInt(body.fee, { label: "the fee", min: 0, max: 100000000, required: false, allowNull: true });
     if (fee.error) return fee;
     out.fee = fee.value;
   }
-  if (!partial || body.deposit !== undefined) {
+  if (role === "owner" && (!partial || body.deposit !== undefined)) {
     const deposit = vInt(body.deposit, { label: "the deposit", min: 0, max: 100000000, required: false, allowNull: true });
     if (deposit.error) return deposit;
     out.deposit = deposit.value;
@@ -1001,7 +1294,7 @@ async function createEvent(request, env, user) {
   if (!originAllowed(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
   if (!body) return json({ error: "Please enter a date." }, 400, request);
-  const parsed = readEventBody(body);
+  const parsed = readEventBody(body, { role: user.role });
   if (parsed.error) return json({ error: parsed.error }, 400, request);
   const ev = parsed.value;
   ev.status = ev.status || "Confirmed";
@@ -1027,7 +1320,7 @@ async function patchEvent(id, request, env, user) {
   if (!body) return json({ error: "Nothing to update." }, 400, request);
   const existing = await env.DB.prepare("SELECT * FROM events WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Event not found." }, 404, request);
-  const parsed = readEventBody(body, { partial: true });
+  const parsed = readEventBody(body, { partial: true, role: user.role });
   if (parsed.error) return json({ error: parsed.error }, 400, request);
   const ev = parsed.value;
   const nextDate = ev.date || existing.date;
@@ -1054,17 +1347,17 @@ async function patchEvent(id, request, env, user) {
 }
 
 async function listRequests(env, request) {
-  await expirePendings(env);
   const { results } = await env.DB.prepare(
-    `SELECT * FROM requests
-     ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 WHEN 'declined' THEN 2 ELSE 3 END, date ASC`
+    `SELECT id, date, name, contact, type, package, pax, venue, notes, status, created_at, decided_at, decided_by, is_sample, decline_reason
+     FROM requests
+     ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 WHEN 'declined' THEN 2 ELSE 3 END, date ASC
+     LIMIT 500`
   ).all();
   return json({ requests: results || [] }, 200, request);
 }
 
 async function decideRequest(id, request, env, user) {
   if (!originAllowed(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
-  await expirePendings(env);
   const body = await readJson(request);
   const decision = body && body.decision;
   if (decision !== "approved" && decision !== "declined") {
@@ -1083,32 +1376,28 @@ async function decideRequest(id, request, env, user) {
     const taken = await dateVenueTaken(env, req.date, req.venue);
     if (taken) return json({ error: "That date and venue are already held by another event." }, 409, request);
     const eventId = randomId();
-    const statements = [
-      env.DB.prepare(
-        "UPDATE requests SET status = 'approved', decided_at = ?, decided_by = ?, decline_reason = NULL WHERE id = ? AND status = 'pending'"
-      ).bind(now, user.id, id),
-      env.DB.prepare(
-        `INSERT INTO events (id, date, client, title, type, package, pax, venue, status, fee, deposit, from_request, created_at, created_by, is_sample)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Confirmed', NULL, NULL, ?, ?, ?, ?)`
-      ).bind(
-        eventId,
-        req.date,
-        req.name,
-        req.type || "Booking request",
-        req.type,
-        req.package || "From booking request",
-        req.pax,
-        req.venue || "Any",
-        req.id,
-        now,
-        user.id,
-        req.is_sample ? 1 : 0
-      ),
-      auditStmt(env, user, "approve", "requests", id, `Created event ${eventId}`, request, req.is_sample)
-    ];
-    const results = await env.DB.batch(statements);
-    const changes = results[0] && results[0].meta && results[0].meta.changes;
-    if (changes !== 1) return json({ error: "This request is no longer pending." }, 409, request);
+    try {
+      const results = await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO events (id, date, client, title, type, package, pax, venue, status, fee, deposit, from_request, created_at, created_by, is_sample)
+           SELECT ?, date, name, COALESCE(NULLIF(type, ''), 'Booking request'), type, COALESCE(package, 'From booking request'), pax, COALESCE(NULLIF(venue, ''), 'Any'), 'Confirmed', NULL, NULL, id, ?, ?, IFNULL(is_sample, 0)
+           FROM requests
+           WHERE id = ? AND status = 'pending'`
+        ).bind(eventId, now, user.id, id),
+        env.DB.prepare(
+          "UPDATE requests SET status = 'approved', decided_at = ?, decided_by = ?, decline_reason = NULL WHERE id = ? AND status = 'pending'"
+        ).bind(now, user.id, id),
+        auditStmt(env, user, "approve", "requests", id, `Created event ${eventId}`, request, req.is_sample)
+      ]);
+      const inserted = results[0] && results[0].meta && results[0].meta.changes;
+      if (inserted !== 1) return json({ error: "This request is no longer pending." }, 409, request);
+    } catch (err) {
+      const message = String(err && err.message ? err.message : err);
+      if (/UNIQUE constraint failed/i.test(message)) {
+        return json({ error: "This request is no longer pending." }, 409, request);
+      }
+      throw err;
+    }
   } else {
     const results = await env.DB.batch([
       env.DB.prepare(
@@ -1156,7 +1445,7 @@ async function createShift(request, env, user) {
   if (!originAllowed(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
   if (!body) return json({ error: "Please enter the date, staff member, and time." }, 400, request);
-  const date = vDate(body.date, { label: "a date" });
+  const date = vDate(body.date, { label: "the date" });
   const staffId = vStr(body.staffId, { label: "the staff member", max: 80 });
   const start = vTime(body.start, "start time");
   const end = vTime(body.end, "end time");
@@ -1165,8 +1454,10 @@ async function createShift(request, env, user) {
   for (const field of [date, staffId, start, end, role, eventId]) {
     if (field.error) return json({ error: field.error }, 400, request);
   }
-  const staff = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(staffId.value).first();
-  if (!staff) return json({ error: "Staff member not found." }, 400, request);
+  const staffError = await assertActiveStaff(env, staffId.value);
+  if (staffError) return json({ error: staffError }, 400, request);
+  const eventError = await assertExistingEvent(env, eventId.value || null);
+  if (eventError) return json({ error: eventError }, 400, request);
   const id = randomId();
   await env.DB.batch([
     env.DB.prepare(
@@ -1186,11 +1477,27 @@ async function patchShift(id, request, env, user) {
   if (!existing) return json({ error: "Shift not found." }, 404, request);
   const fields = {};
   if (body.date !== undefined) {
-    const date = vDate(body.date, { label: "a date" });
+    const date = vDate(body.date, { label: "the date" });
     if (date.error) return json({ error: date.error }, 400, request);
     fields.date = date.value;
   }
-  if (body.staffId !== undefined) fields.staff_id = String(body.staffId);
+  if (body.staffId !== undefined) {
+    const staffId = vStr(body.staffId, { label: "the staff member", max: 80 });
+    if (staffId.error) return json({ error: staffId.error }, 400, request);
+    const staffError = await assertActiveStaff(env, staffId.value);
+    if (staffError) return json({ error: staffError }, 400, request);
+    fields.staff_id = staffId.value;
+  }
+  if (body.role !== undefined) {
+    const role = vStr(body.role, { label: "the assignment", required: false, max: 80 });
+    if (role.error) return json({ error: role.error }, 400, request);
+    fields.role = role.value;
+  }
+  if (body.eventId !== undefined) {
+    const eventError = await assertExistingEvent(env, body.eventId || null);
+    if (eventError) return json({ error: eventError }, 400, request);
+    fields.event_id = body.eventId || null;
+  }
   if (body.start !== undefined) {
     const start = vTime(body.start, "start time");
     if (start.error) return json({ error: start.error }, 400, request);
@@ -1201,8 +1508,6 @@ async function patchShift(id, request, env, user) {
     if (end.error) return json({ error: end.error }, 400, request);
     fields.end = end.value;
   }
-  if (body.role !== undefined) fields.role = String(body.role).trim();
-  if (body.eventId !== undefined) fields.event_id = body.eventId || null;
   const keys = Object.keys(fields);
   if (!keys.length) return json({ shift: existing }, 200, request);
   await env.DB.batch([
@@ -1253,6 +1558,10 @@ async function createTask(request, env, user) {
   for (const field of [title, staffId, due, eventId]) {
     if (field.error) return json({ error: field.error }, 400, request);
   }
+  const staffError = await assertActiveStaff(env, staffId.value);
+  if (staffError) return json({ error: staffError }, 400, request);
+  const eventError = await assertExistingEvent(env, eventId.value || null);
+  if (eventError) return json({ error: eventError }, 400, request);
   const id = randomId();
   await env.DB.batch([
     env.DB.prepare(
@@ -1275,7 +1584,10 @@ async function patchTask(id, request, env, user) {
   if (body.status) status = body.status;
   else status = existing.status === "done" ? "open" : "done";
   if (status !== "open" && status !== "done") return json({ error: "Status must be open or done." }, 400, request);
-  await env.DB.prepare("UPDATE tasks SET status = ? WHERE id = ?").bind(status, id).run();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE tasks SET status = ? WHERE id = ?").bind(status, id),
+    auditStmt(env, user, "update", "tasks", id, status, request, existing.is_sample)
+  ]);
   const task = await env.DB.prepare("SELECT * FROM tasks WHERE id = ?").bind(id).first();
   return json({ task }, 200, request);
 }
@@ -1335,11 +1647,18 @@ async function clock(env, request, user) {
     "SELECT * FROM attendance WHERE staff_id = ? AND date = ? AND time_out IS NULL ORDER BY time_in DESC LIMIT 1"
   ).bind(user.id, today).first();
   if (open) {
-    await env.DB.prepare("UPDATE attendance SET time_out = ? WHERE id = ?").bind(time, open.id).run();
+    await env.DB.batch([
+      env.DB.prepare("UPDATE attendance SET time_out = ? WHERE id = ?").bind(time, open.id),
+      auditStmt(env, user, "clock_out", "attendance", open.id, `${today} ${time}`, request, open.is_sample)
+    ]);
   } else {
-    await env.DB.prepare(
-      "INSERT INTO attendance (id, staff_id, date, time_in, time_out, is_sample) VALUES (?, ?, ?, ?, NULL, 0)"
-    ).bind(randomId(), user.id, today, time).run();
+    const punchId = randomId();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO attendance (id, staff_id, date, time_in, time_out, is_sample) VALUES (?, ?, ?, ?, NULL, 0)"
+      ).bind(punchId, user.id, today, time),
+      auditStmt(env, user, "clock_in", "attendance", punchId, `${today} ${time}`, request)
+    ]);
   }
   const { results } = await env.DB.prepare(
     "SELECT attendance.*, u.name AS staff_name FROM attendance LEFT JOIN users u ON u.id = attendance.staff_id WHERE attendance.staff_id = ? ORDER BY date DESC"
@@ -1368,7 +1687,7 @@ async function patchAttendance(id, request, env, user) {
     }
   }
   if (body.date !== undefined) {
-    const date = vDate(body.date, { label: "a date" });
+    const date = vDate(body.date, { label: "the date" });
     if (date.error) return json({ error: date.error }, 400, request);
     fields.date = date.value;
   }
@@ -1397,7 +1716,7 @@ async function createAnnouncement(request, env, user) {
   if (!body) return json({ error: "Please enter a title and message." }, 400, request);
   const title = vStr(body.title, { label: "a title", max: 160 });
   const bodyText = vStr(body.body, { label: "a message", max: 2000 });
-  const date = vDate(body.date || todayISO(), { label: "a date" });
+  const date = vDate(body.date || todayISO(), { label: "the date" });
   for (const field of [title, bodyText, date]) {
     if (field.error) return json({ error: field.error }, 400, request);
   }
@@ -1414,7 +1733,7 @@ async function createAnnouncement(request, env, user) {
 
 async function listFinances(env, request) {
   const { results } = await env.DB.prepare(
-    "SELECT id, date, client, title, fee, deposit, status, is_sample FROM events ORDER BY date ASC"
+    "SELECT id, date, client, title, fee, deposit, status, is_sample FROM events WHERE status != 'Cancelled' ORDER BY date ASC"
   ).all();
   const events = results || [];
   const real = events.filter((event) => !event.is_sample);
@@ -1462,9 +1781,9 @@ async function createUser(request, env, actor) {
   const now = isoNow();
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO users (id, email, name, role, title, password_hash, password_salt, password_set_at, must_change_password, is_active, is_sample, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, ?)`
-    ).bind(id, email.value, name.value, role.value, title.value, hash, salt, now, now),
+      `INSERT INTO users (id, email, name, role, title, password_hash, password_salt, password_set_at, must_change_password, is_active, is_sample, created_at, password_algo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, ?, ?)`
+    ).bind(id, email.value, name.value, role.value, title.value, hash, salt, now, now, PASSWORD_ALGO),
     auditStmt(env, actor, "create", "users", id, `${email.value} ${role.value}`, request)
   ]);
   const user = await env.DB.prepare(
@@ -1492,29 +1811,43 @@ async function patchUser(id, request, env, actor) {
     values.push(name.value);
   }
   if (body.title !== undefined) {
+    const title = vStr(body.title, { label: "the title", required: false, max: 80 });
+    if (title.error) return json({ error: title.error }, 400, request);
     updates.push("title = ?");
-    values.push(String(body.title || "").trim());
+    values.push(title.value);
   }
+  let nextRole = existing.role;
+  let nextActive = existing.is_active === 0 ? 0 : 1;
   if (body.role) {
     const role = vOneOf(body.role, ["owner", "admin", "staff"], "role");
     if (role.error) return json({ error: role.error }, 400, request);
     updates.push("role = ?");
     values.push(role.value);
+    nextRole = role.value;
     if (role.value !== existing.role) revoke = true;
   }
   if (body.is_active !== undefined) {
     const active = body.is_active ? 1 : 0;
     updates.push("is_active = ?");
     values.push(active);
+    nextActive = active;
     if (active === 0) revoke = true;
+  }
+  if (existing.role === "owner" && (nextRole !== "owner" || nextActive === 0)) {
+    const others = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND IFNULL(is_active, 1) = 1 AND id != ?"
+    ).bind(id).first();
+    if (!others || Number(others.n) < 1) {
+      return json({ error: "There must be at least one active owner account." }, 400, request);
+    }
   }
   if (body.password) {
     const pwdError = validPassword(String(body.password));
     if (pwdError) return json({ error: pwdError }, 400, request);
     const salt = newSalt();
     const hash = await hashPassword(String(body.password), salt);
-    updates.push("password_hash = ?", "password_salt = ?", "password_set_at = ?", "must_change_password = 1");
-    values.push(hash, salt, isoNow());
+    updates.push("password_hash = ?", "password_salt = ?", "password_set_at = ?", "must_change_password = 1", "password_algo = ?");
+    values.push(hash, salt, isoNow(), PASSWORD_ALGO);
     revoke = true;
   }
   if (!updates.length) return json({ user: publicUser(existing) }, 200, request);
@@ -1539,7 +1872,10 @@ async function revokeUserSessions(id, request, env, actor) {
 }
 
 async function sampleStatus(env, request) {
-  const tables = ["users", "events", "requests", "shifts", "tasks", "announcements", "attendance"];
+  const tables = ["users", "events", "requests", "shifts", "tasks", "announcements", "attendance",
+    "clients", "leads", "quotes", "contracts", "payments", "packages",
+    "checklists", "issues", "inventory_items", "expenses", "petty_cash",
+    "payroll_periods", "cash_advances", "leave_requests"];
   const counts = {};
   let hasSample = false;
   for (const table of tables) {
@@ -1550,29 +1886,128 @@ async function sampleStatus(env, request) {
   return json({ hasSample, counts }, 200, request);
 }
 
+// Hardcoded table/column pairs only. Real rows that point at sample rows block removal.
+const SAMPLE_FK_REFS = [
+  ["events", "created_by", "users"],
+  ["events", "coordinator_id", "users"],
+  ["events", "from_request", "requests"],
+  ["events", "client_id", "clients"],
+  ["events", "package_id", "packages"],
+  ["events", "quote_id", "quotes"],
+  ["requests", "decided_by", "users"],
+  ["shifts", "staff_id", "users"],
+  ["shifts", "event_id", "events"],
+  ["tasks", "staff_id", "users"],
+  ["tasks", "event_id", "events"],
+  ["attendance", "staff_id", "users"],
+  ["attendance", "shift_id", "shifts"],
+  ["announcements", "created_by", "users"],
+  ["leads", "assigned_to", "users"],
+  ["leads", "client_id", "clients"],
+  ["leads", "request_id", "requests"],
+  ["quotes", "created_by", "users"],
+  ["quotes", "lead_id", "leads"],
+  ["quotes", "request_id", "requests"],
+  ["quotes", "event_id", "events"],
+  ["quotes", "client_id", "clients"],
+  ["quote_lines", "quote_id", "quotes"],
+  ["contracts", "created_by", "users"],
+  ["contracts", "quote_id", "quotes"],
+  ["contracts", "event_id", "events"],
+  ["contracts", "client_id", "clients"],
+  ["payments", "created_by", "users"],
+  ["payments", "event_id", "events"],
+  ["payments", "quote_id", "quotes"],
+  ["payments", "contract_id", "contracts"],
+  ["event_details", "event_id", "events"],
+  ["event_details", "coordinator_id", "users"],
+  ["event_item_allocations", "event_id", "events"],
+  ["event_item_allocations", "item_id", "inventory_items"],
+  ["checklists", "event_id", "events"],
+  ["checklists", "assigned_to", "users"],
+  ["checklists", "template_id", "hk_templates"],
+  ["checklist_items", "checklist_id", "checklists"],
+  ["issues", "assigned_to", "users"],
+  ["inventory_moves", "created_by", "users"],
+  ["inventory_moves", "item_id", "inventory_items"],
+  ["purchase_orders", "supplier_id", "suppliers"],
+  ["po_lines", "po_id", "purchase_orders"],
+  ["expenses", "created_by", "users"],
+  ["expenses", "event_id", "events"],
+  ["petty_cash", "created_by", "users"],
+  ["cash_advances", "user_id", "users"],
+  ["leave_requests", "user_id", "users"],
+  ["payroll_entries", "user_id", "users"],
+  ["payroll_lines", "entry_id", "payroll_entries"],
+  
+  ["payment_schedule", "event_id", "events"],
+  ["payment_schedule", "contract_id", "contracts"]
+];
+
+async function findSampleBlockers(env) {
+  const found = [];
+  for (const [table, col, target] of SAMPLE_FK_REFS) {
+    const sql = `SELECT '${table}' AS src, id FROM ${table} WHERE IFNULL(is_sample, 0) = 0 AND ${col} IS NOT NULL AND ${col} IN (SELECT id FROM ${target} WHERE IFNULL(is_sample, 0) = 1) LIMIT 20`;
+    try {
+      const { results } = await env.DB.prepare(sql).all();
+      if (results && results.length) found.push(...results);
+    } catch (err) {
+      const message = String(err && err.message ? err.message : err);
+      if (!/no such table|no such column/i.test(message)) throw err;
+    }
+  }
+  const profiles = await env.DB.prepare(
+    "SELECT 'staff_profiles' AS src, user_id AS id FROM staff_profiles WHERE IFNULL(is_sample, 0) = 0 AND user_id IN (SELECT id FROM users WHERE IFNULL(is_sample, 0) = 1) LIMIT 20"
+  ).all();
+  if (profiles.results && profiles.results.length) found.push(...profiles.results);
+  return found;
+}
+
 async function removeSample(request, env, user) {
   if (!originAllowed(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
-  const blockers = await env.DB.prepare(
-    `SELECT 'events' AS src, id FROM events WHERE IFNULL(is_sample, 0) = 0 AND created_by IN (SELECT id FROM users WHERE is_sample = 1)
-     UNION ALL
-     SELECT 'requests', id FROM requests WHERE IFNULL(is_sample, 0) = 0 AND decided_by IN (SELECT id FROM users WHERE is_sample = 1)
-     UNION ALL
-     SELECT 'shifts', id FROM shifts WHERE IFNULL(is_sample, 0) = 0 AND staff_id IN (SELECT id FROM users WHERE is_sample = 1)
-     UNION ALL
-     SELECT 'tasks', id FROM tasks WHERE IFNULL(is_sample, 0) = 0 AND staff_id IN (SELECT id FROM users WHERE is_sample = 1)
-     UNION ALL
-     SELECT 'attendance', id FROM attendance WHERE IFNULL(is_sample, 0) = 0 AND staff_id IN (SELECT id FROM users WHERE is_sample = 1)`
-  ).all();
-  const found = blockers.results || [];
+  const found = await findSampleBlockers(env);
   if (found.length) {
     return json({
-      error: "Some real records still refer to a sample staff account. Please reassign or edit those first.",
+      error: "Some real records still refer to sample data. Please reassign or edit those first.",
       code: "sample_in_use",
       references: found.slice(0, 20)
     }, 409, request);
   }
   const results = await env.DB.batch([
     env.DB.prepare("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE IFNULL(is_sample, 0) = 1 AND role != 'owner')"),
+    env.DB.prepare("DELETE FROM audit_log WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM quote_lines WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM po_lines WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM hk_template_items WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM checklist_items WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM payment_schedule WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM event_item_allocations WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM inventory_moves WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM payroll_lines WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM payments WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM expenses WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM petty_cash WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM cash_advances WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM leave_requests WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM payroll_entries WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM payroll_periods WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM contracts WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM quotes WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM leads WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM packages WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM event_details WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM checklists WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM issues WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM hk_templates WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM inventory_items WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM purchase_orders WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM suppliers WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM areas WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM venues WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM clients WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM accounts WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM stock_locations WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM staff_profiles WHERE IFNULL(is_sample, 0) = 1"),
     env.DB.prepare("DELETE FROM attendance WHERE IFNULL(is_sample, 0) = 1"),
     env.DB.prepare("DELETE FROM tasks WHERE IFNULL(is_sample, 0) = 1"),
     env.DB.prepare("DELETE FROM shifts WHERE IFNULL(is_sample, 0) = 1"),
@@ -1603,7 +2038,13 @@ async function exportReport(url, env, request, user) {
     events: user.role === "owner" || user.role === "admin",
     requests: user.role === "owner" || user.role === "admin",
     attendance: user.role === "owner" || user.role === "admin",
-    finances: user.role === "owner"
+    finances: user.role === "owner",
+    leads: user.role === "owner" || user.role === "admin",
+    quotes: user.role === "owner",
+    payments: user.role === "owner",
+    expenses: user.role === "owner",
+    inventory: user.role === "owner" || user.role === "admin",
+    housekeeping: user.role === "owner" || user.role === "admin"
   };
   if (!allow[table]) return json({ error: "Please pick a report you can download." }, 400, request);
   let rows = [];
@@ -1644,11 +2085,49 @@ async function exportReport(url, env, request, user) {
     ];
   } else if (table === "finances") {
     rows = (await env.DB.prepare(
-      "SELECT date, client, title, fee, deposit, status FROM events WHERE IFNULL(is_sample,0)=0 ORDER BY date"
+      "SELECT date, client, title, fee, deposit, status FROM events WHERE IFNULL(is_sample,0)=0 AND status != 'Cancelled' ORDER BY date"
     ).all()).results || [];
     columns = [
       { key: "date", label: "Date" }, { key: "client", label: "Client" }, { key: "title", label: "Title" },
       { key: "fee", label: "Fee" }, { key: "deposit", label: "Deposit" }, { key: "status", label: "Status" }
+    ];
+  } else if (table === "leads") {
+    rows = (await env.DB.prepare("SELECT name, contact, source, status, event_date, venue, pax, created_at FROM leads WHERE IFNULL(is_sample,0)=0 ORDER BY created_at").all()).results || [];
+    columns = [
+      { key: "name", label: "Name" }, { key: "contact", label: "Contact" }, { key: "source", label: "Source" },
+      { key: "status", label: "Stage" }, { key: "event_date", label: "Event date" }, { key: "venue", label: "Venue" },
+      { key: "pax", label: "Pax" }, { key: "created_at", label: "Created" }
+    ];
+  } else if (table === "quotes") {
+    rows = (await env.DB.prepare("SELECT number, client_name, event_date, venue, total, status, valid_until FROM quotes WHERE IFNULL(is_sample,0)=0 ORDER BY created_at").all()).results || [];
+    columns = [
+      { key: "number", label: "Number" }, { key: "client_name", label: "Client" }, { key: "event_date", label: "Event date" },
+      { key: "venue", label: "Venue" }, { key: "total", label: "Total" }, { key: "status", label: "Status" },
+      { key: "valid_until", label: "Valid until" }
+    ];
+  } else if (table === "payments") {
+    rows = (await env.DB.prepare("SELECT receipt_no, client_name, kind, amount, method, received_at, voided_at FROM payments WHERE IFNULL(is_sample,0)=0 ORDER BY received_at").all()).results || [];
+    columns = [
+      { key: "receipt_no", label: "OR" }, { key: "client_name", label: "Client" }, { key: "kind", label: "Kind" },
+      { key: "amount", label: "Amount" }, { key: "method", label: "Method" }, { key: "received_at", label: "Received" },
+      { key: "voided_at", label: "Voided" }
+    ];
+  } else if (table === "expenses") {
+    rows = (await env.DB.prepare("SELECT date, category, payee, amount, method, receipt_no FROM expenses WHERE IFNULL(is_sample,0)=0 AND voided_at IS NULL ORDER BY date").all()).results || [];
+    columns = [
+      { key: "date", label: "Date" }, { key: "category", label: "Category" }, { key: "payee", label: "Payee" },
+      { key: "amount", label: "Amount" }, { key: "method", label: "Method" }, { key: "receipt_no", label: "Receipt" }
+    ];
+  } else if (table === "inventory") {
+    rows = (await env.DB.prepare("SELECT name, sku, category, unit, qty_on_hand, reorder_level FROM inventory_items WHERE IFNULL(is_sample,0)=0 ORDER BY category, name").all()).results || [];
+    columns = [
+      { key: "name", label: "Item" }, { key: "sku", label: "SKU" }, { key: "category", label: "Category" },
+      { key: "unit", label: "Unit" }, { key: "qty_on_hand", label: "On hand" }, { key: "reorder_level", label: "Reorder at" }
+    ];
+  } else if (table === "housekeeping") {
+    rows = (await env.DB.prepare("SELECT title, kind, status, due FROM checklists WHERE IFNULL(is_sample,0)=0 ORDER BY due").all()).results || [];
+    columns = [
+      { key: "title", label: "Job" }, { key: "kind", label: "Kind" }, { key: "status", label: "Status" }, { key: "due", label: "Due" }
     ];
   }
   await audit(env, user, "export", table, null, `${format} download`, request);

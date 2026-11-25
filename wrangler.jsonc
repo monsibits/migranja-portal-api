@@ -12,5 +12,8 @@
       "database_name": "migranja-portal",
       "database_id": "43708e46-0ba5-49da-b91c-4da2b41ee1a0"
     }
-  ]
+  ],
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  }
 }
