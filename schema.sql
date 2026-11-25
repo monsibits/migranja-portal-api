@@ -798,3 +798,9 @@ CREATE VIEW v_event_balance AS
   FROM events e
   WHERE e.status != 'Cancelled';
 
+-- Round 3
+CREATE UNIQUE INDEX IF NOT EXISTS idx_quotes_number ON quotes(number);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_contracts_number ON contracts(number);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_receipt_no ON payments(receipt_no) WHERE receipt_no IS NOT NULL AND receipt_no != '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_orders_number ON purchase_orders(number);
+-- payroll_lines also has: advance_ids TEXT, contributions_estimated INTEGER NOT NULL DEFAULT 1

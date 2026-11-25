@@ -1,8 +1,27 @@
 /**
  * Operations modules: dashboard, sales, event sheets, housekeeping,
  * inventory, accounting, HR, and expanded reports.
- * Concatenated after index.js for deploy. Uses helpers declared there.
+ * Imported by src/index.js. A plain wrangler deploy includes these routes.
  */
+import {
+  allow,
+  audit,
+  auditStmt,
+  dateVenueTaken,
+  deny,
+  eventColumns,
+  isoNow,
+  json,
+  originAllowed,
+  randomId,
+  readJson,
+  todayISO,
+  vDate,
+  vInt,
+  vOneOf,
+  vStr
+} from "./index.js";
+
 
 const LEAD_STAGES = ["new", "contacted", "quoted", "won", "lost"];
 const QUOTE_STATUSES = ["draft", "sent", "accepted", "rejected", "expired"];
@@ -73,6 +92,88 @@ function stripMoneyFields(row, fields) {
   return out;
 }
 
+function requireBody(body, request) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return json({ error: "Please send the details as JSON." }, 400, request);
+  }
+  return null;
+}
+
+function clipText(value, max = 2000) {
+  return String(value == null ? "" : value).trim().slice(0, max);
+}
+
+function actorSample(user, parent) {
+  if (parent && (parent.is_sample === 1 || parent.is_sample === true)) return 1;
+  if (user && (user.is_sample === 1 || user.is_sample === true)) return 1;
+  return 0;
+}
+
+function withoutUnitCost(row) {
+  if (!row) return row;
+  const out = { ...row };
+  delete out.unit_cost;
+  delete out.unit_cost_cents;
+  return out;
+}
+
+function presentItem(row, user) {
+  return isOwner(user) ? row : withoutUnitCost(row);
+}
+
+async function mustRow(env, sql, id, label) {
+  if (!id) return { error: `Please pick ${label}.` };
+  const row = await env.DB.prepare(sql).bind(id).first();
+  if (!row) return { error: `${label} was not found.` };
+  return { row };
+}
+
+async function mustEvent(env, id) {
+  return mustRow(env, "SELECT id, is_sample FROM events WHERE id = ?", id, "an event");
+}
+
+async function mustActiveStaff(env, id) {
+  const found = await mustRow(env, "SELECT id, is_active, is_sample, role FROM users WHERE id = ?", id, "a staff member");
+  if (found.error) return found;
+  if (found.row.is_active === 0) return { error: "That staff member is no longer active." };
+  return found;
+}
+
+async function mustArea(env, id) {
+  return mustRow(env, "SELECT id, is_sample FROM areas WHERE id = ?", id, "an area");
+}
+
+async function mustItem(env, id) {
+  return mustRow(env, "SELECT id, is_sample, qty_on_hand FROM inventory_items WHERE id = ?", id, "an item");
+}
+
+async function mustTemplate(env, id) {
+  return mustRow(env, "SELECT id, is_sample FROM hk_templates WHERE id = ?", id, "a template");
+}
+
+async function mustVenue(env, id) {
+  return mustRow(env, "SELECT id, is_sample FROM venues WHERE id = ?", id, "a venue");
+}
+
+function applyOpenAdvances(openList, remaining) {
+  const appliedIds = [];
+  let applied = 0;
+  let left = Math.max(0, Number(remaining) || 0);
+  for (const adv of openList || []) {
+    const amt = Number(adv.amount) || 0;
+    if (amt <= 0) continue;
+    if (amt <= left) {
+      applied += amt;
+      left -= amt;
+      appliedIds.push(adv.id);
+    } else {
+      break;
+    }
+  }
+  return { applied, appliedIds };
+}
+
+
 const PACKAGE_MONEY = ["base_fee", "extra_pax_price"];
 const QUOTE_MONEY = ["subtotal", "discount", "total", "unit_price", "amount"];
 const CONTRACT_MONEY = ["total", "deposit_due"];
@@ -87,7 +188,7 @@ const SERIAL_SPECS = {
   pos: { table: "purchase_orders", column: "number", prefix: "MG-PO" }
 };
 
-async function handleOps(request, env, url, user) {
+export async function handleOps(request, env, url, user) {
   const path = url.pathname;
   const method = request.method;
   const parts = path.split("/").filter(Boolean);
@@ -151,27 +252,30 @@ async function handleOps(request, env, url, user) {
   const entry = listMap[path];
   if (entry) {
     if (method === "GET") {
+      if (path === "/api/hr/leave" && user.role === "staff") {
+        return entry.list(env, request, user);
+      }
       if (!allow(user, entry.res, "read")) return deny(request);
       if (path === "/api/payments" && !isOwner(user)) return denyMoney(request);
       return entry.list(env, request, user);
     }
     if (method === "POST" && entry.create) {
-      const writeRes = path === "/api/inventory/moves" && ["issue", "return"].includes(String((await peekKind(request)) || ""))
-        ? "housekeeping"
-        : entry.res;
-      // Staff may post issue/return; createMove enforces kind. Use inventory write for admin/owner, special case inside createMove.
+      // Staff may post issue/return; createMove enforces kind.
       if (path === "/api/inventory/moves") {
         if (!allow(user, "inventory", "read")) return deny(request);
-        return entry.create(env, request, user);
+        return entry.create(request, env, user);
       }
       if (path === "/api/hr/leave" && user.role === "staff") {
-        return entry.create(env, request, user);
+        return entry.create(request, env, user);
       }
       if (!allow(user, entry.res, "write")) return deny(request);
+      if (["/api/areas", "/api/hk/templates"].includes(path) && user.role === "staff") {
+        return deny(request);
+      }
       if (["/api/payments", "/api/quotes", "/api/contracts", "/api/packages"].includes(path) && !isOwner(user)) {
         return denyMoney(request);
       }
-      return entry.create(env, request, user);
+      return entry.create(request, env, user);
     }
   }
 
@@ -258,10 +362,6 @@ async function handleOps(request, env, url, user) {
     return voidExpense(parts[2], request, env, user);
   }
 
-  return null;
-}
-
-async function peekKind(request) {
   return null;
 }
 
@@ -958,7 +1058,7 @@ async function getEventSheet(env, request, user, id) {
   const allocations = await listBy(env, request, `SELECT a.*, i.name AS item_name, i.unit FROM event_item_allocations a LEFT JOIN inventory_items i ON i.id = a.item_id WHERE a.event_id = ?`, [id]);
   const jobs = await listBy(env, request, `SELECT c.*, u.name AS assigned_name, ar.name AS area_name FROM checklists c LEFT JOIN users u ON u.id = c.assigned_to LEFT JOIN areas ar ON ar.id = c.area_id WHERE c.event_id = ?`, [id]);
   let balance = null;
-  if (user.role === "owner" || allow(user, "sales", "read")) {
+  if (isOwner(user)) {
     balance = await env.DB.prepare("SELECT * FROM v_event_balance WHERE event_id = ?").bind(id).first();
   }
   return json({ event, details: details || { event_id: id }, shifts, allocations, jobs, balance }, 200, request);
@@ -969,6 +1069,12 @@ async function saveEventSheet(env, request, user, id) {
   const existing = await env.DB.prepare("SELECT * FROM events WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Event not found." }, 404, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
+  if (body.coordinator_id) {
+    const coord = await mustActiveStaff(env, body.coordinator_id);
+    if (coord.error) return json({ error: coord.error }, 400, request);
+  }
   const headcount = vInt(body && body.headcount, { label: "the headcount", min: 0, max: 2000, required: false, allowNull: true });
   const menu = vStr(body && body.menu, { label: "the menu", required: false, max: 4000 });
   const setup = vStr(body && body.setup, { label: "the setup notes", required: false, max: 4000 });
@@ -1000,31 +1106,63 @@ async function listAreas(env, request) {
 
 async function createArea(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
+  if (user.role === "staff") return deny(request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const name = vStr(body && body.name, { label: "the area name", max: 120 });
-  if (name.error) return json({ error: name.error }, 400, request);
+  const kind = vStr(body && body.kind, { label: "the area kind", required: false, max: 80 });
+  const notes = vStr(body && body.notes, { label: "notes", required: false, max: 2000 });
+  if (name.error || kind.error || notes.error) return json({ error: name.error || kind.error || notes.error }, 400, request);
+  if (body.venue_id) {
+    const venue = await mustVenue(env, body.venue_id);
+    if (venue.error) return json({ error: venue.error }, 400, request);
+  }
   const id = randomId();
   await env.DB.batch([
-    env.DB.prepare("INSERT INTO areas (id, name, kind, notes, venue_id, is_sample) VALUES (?, ?, ?, ?, ?, 0)").bind(id, name.value, body.kind || "", body.notes || "", body.venue_id || null),
-    auditStmt(env, user, "create", "areas", id, name.value, request)
+    env.DB.prepare("INSERT INTO areas (id, name, kind, notes, venue_id, is_sample) VALUES (?, ?, ?, ?, ?, ?)").bind(id, name.value, kind.value || "", notes.value || "", body.venue_id || null, actorSample(user)),
+    auditStmt(env, user, "create", "areas", id, name.value, request, actorSample(user))
   ]);
   return json({ area: await env.DB.prepare("SELECT * FROM areas WHERE id = ?").bind(id).first() }, 201, request);
 }
 
 async function patchArea(id, request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
+  if (user.role === "staff") return deny(request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const existing = await env.DB.prepare("SELECT * FROM areas WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Area not found." }, 404, request);
   const fields = {};
-  if (body.name !== undefined) fields.name = String(body.name || "").trim();
-  if (body.kind !== undefined) fields.kind = String(body.kind || "").trim();
-  if (body.notes !== undefined) fields.notes = String(body.notes || "").trim();
-  if (body.venue_id !== undefined) fields.venue_id = body.venue_id || null;
+  if (body.name !== undefined) {
+    const name = vStr(body.name, { label: "the area name", max: 120 });
+    if (name.error) return json({ error: name.error }, 400, request);
+    fields.name = name.value;
+  }
+  if (body.kind !== undefined) {
+    const kind = vStr(body.kind, { label: "the area kind", required: false, max: 80 });
+    if (kind.error) return json({ error: kind.error }, 400, request);
+    fields.kind = kind.value || "";
+  }
+  if (body.notes !== undefined) {
+    const notes = vStr(body.notes, { label: "notes", required: false, max: 2000 });
+    if (notes.error) return json({ error: notes.error }, 400, request);
+    fields.notes = notes.value || "";
+  }
+  if (body.venue_id !== undefined) {
+    if (body.venue_id) {
+      const venue = await mustVenue(env, body.venue_id);
+      if (venue.error) return json({ error: venue.error }, 400, request);
+    }
+    fields.venue_id = body.venue_id || null;
+  }
   const keys = Object.keys(fields);
   if (!keys.length) return json({ area: existing }, 200, request);
-  await env.DB.prepare(`UPDATE areas SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`).bind(...keys.map((k) => fields[k]), id).run();
-  await audit(env, user, "update", "areas", id, JSON.stringify(fields), request, existing.is_sample);
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE areas SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`).bind(...keys.map((k) => fields[k]), id),
+    auditStmt(env, user, "update", "areas", id, JSON.stringify(fields), request, existing.is_sample)
+  ]);
   return json({ area: await env.DB.prepare("SELECT * FROM areas WHERE id = ?").bind(id).first() }, 200, request);
 }
 
@@ -1043,20 +1181,28 @@ async function listHkTemplates(env, request) {
 
 async function createHkTemplate(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
+  if (user.role === "staff") return deny(request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const name = vStr(body && body.name, { label: "the template name", max: 160 });
   const kind = vOneOf(String(body && body.kind || "pre"), HK_KINDS, "job kind");
   if (name.error || kind.error) return json({ error: (name.error || kind.error) }, 400, request);
+  if (body.area_id) {
+    const area = await mustArea(env, body.area_id);
+    if (area.error) return json({ error: area.error }, 400, request);
+  }
   const id = randomId();
+  const sample = actorSample(user);
   const statements = [
-    env.DB.prepare("INSERT INTO hk_templates (id, name, kind, area_id, is_sample, created_at) VALUES (?, ?, ?, ?, 0, ?)").bind(id, name.value, kind.value, body.area_id || null, isoNow())
+    env.DB.prepare("INSERT INTO hk_templates (id, name, kind, area_id, is_sample, created_at) VALUES (?, ?, ?, ?, ?, ?)").bind(id, name.value, kind.value, body.area_id || null, sample, isoNow())
   ];
   (body.items || []).forEach((label, index) => {
     const text = typeof label === "string" ? label : label.label;
     if (!text) return;
-    statements.push(env.DB.prepare("INSERT INTO hk_template_items (id, template_id, label, sort_order, is_sample) VALUES (?, ?, ?, ?, 0)").bind(randomId(), id, String(text).slice(0, 200), index));
+    statements.push(env.DB.prepare("INSERT INTO hk_template_items (id, template_id, label, sort_order, is_sample) VALUES (?, ?, ?, ?, ?)").bind(randomId(), id, String(text).slice(0, 200), index, sample));
   });
-  statements.push(auditStmt(env, user, "create", "hk_templates", id, name.value, request));
+  statements.push(auditStmt(env, user, "create", "hk_templates", id, name.value, request, sample));
   await env.DB.batch(statements);
   return json({ template: await env.DB.prepare("SELECT * FROM hk_templates WHERE id = ?").bind(id).first() }, 201, request);
 }
@@ -1093,19 +1239,39 @@ async function createHkJob(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   if (user.role === "staff") return deny(request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const title = vStr(body && body.title, { label: "the job title", max: 160 });
   const kind = vOneOf(String(body && body.kind || "pre"), HK_KINDS, "job kind");
   const status = vOneOf(String(body && body.status || "pending"), HK_STATUSES, "job status");
   const due = vDate(body && body.due, { label: "the due date", required: false });
-  for (const field of [title, kind, status, due]) {
+  const notes = vStr(body && body.notes, { label: "notes", required: false, max: 2000 });
+  for (const field of [title, kind, status, due, notes]) {
     if (field.error) return json({ error: field.error }, 400, request);
   }
+  if (body.event_id) {
+    const ev = await mustEvent(env, body.event_id);
+    if (ev.error) return json({ error: ev.error }, 400, request);
+  }
+  if (body.area_id) {
+    const area = await mustArea(env, body.area_id);
+    if (area.error) return json({ error: area.error }, 400, request);
+  }
+  if (body.assigned_to) {
+    const staff = await mustActiveStaff(env, body.assigned_to);
+    if (staff.error) return json({ error: staff.error }, 400, request);
+  }
+  if (body.template_id) {
+    const tmpl = await mustTemplate(env, body.template_id);
+    if (tmpl.error) return json({ error: tmpl.error }, 400, request);
+  }
   const id = randomId();
+  const sample = actorSample(user);
   const statements = [
     env.DB.prepare(
       `INSERT INTO checklists (id, event_id, area_id, kind, title, assigned_to, due, status, notes, created_at, created_by, is_sample)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
-    ).bind(id, body.event_id || null, body.area_id || null, kind.value, title.value, body.assigned_to || null, due.value || null, status.value, body.notes || "", isoNow(), user.id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, body.event_id || null, body.area_id || null, kind.value, title.value, body.assigned_to || null, due.value || null, status.value, notes.value || "", isoNow(), user.id, sample)
   ];
   let labels = Array.isArray(body.items) ? body.items : [];
   if (body.template_id && !labels.length) {
@@ -1128,16 +1294,36 @@ async function patchHkJob(id, request, env, user) {
   if (!existing) return json({ error: "Job not found." }, 404, request);
   if (user.role === "staff" && existing.assigned_to !== user.id) return deny(request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const fields = {};
   if (body.status !== undefined) {
     const status = vOneOf(String(body.status), HK_STATUSES, "job status");
     if (status.error) return json({ error: status.error }, 400, request);
     fields.status = status.value;
   }
-  if (body.notes !== undefined) fields.notes = String(body.notes || "").trim();
-  if (body.assigned_to !== undefined && user.role !== "staff") fields.assigned_to = body.assigned_to || null;
-  if (body.due !== undefined && user.role !== "staff") fields.due = body.due || null;
-  if (body.title !== undefined && user.role !== "staff") fields.title = String(body.title || "").trim();
+  if (body.notes !== undefined) {
+    const notes = vStr(body.notes, { label: "notes", required: false, max: 2000 });
+    if (notes.error) return json({ error: notes.error }, 400, request);
+    fields.notes = notes.value || "";
+  }
+  if (body.assigned_to !== undefined && user.role !== "staff") {
+    if (body.assigned_to) {
+      const staff = await mustActiveStaff(env, body.assigned_to);
+      if (staff.error) return json({ error: staff.error }, 400, request);
+    }
+    fields.assigned_to = body.assigned_to || null;
+  }
+  if (body.due !== undefined && user.role !== "staff") {
+    const due = vDate(body.due, { label: "the due date", required: false });
+    if (due.error) return json({ error: due.error }, 400, request);
+    fields.due = due.value || null;
+  }
+  if (body.title !== undefined && user.role !== "staff") {
+    const title = vStr(body.title, { label: "the job title", max: 160 });
+    if (title.error) return json({ error: title.error }, 400, request);
+    fields.title = title.value;
+  }
   const keys = Object.keys(fields);
   if (!keys.length) return json({ job: existing }, 200, request);
   await env.DB.batch([
@@ -1154,10 +1340,16 @@ async function patchHkItem(id, request, env, user) {
   const job = await env.DB.prepare("SELECT * FROM checklists WHERE id = ?").bind(item.checklist_id).first();
   if (user.role === "staff" && job && job.assigned_to !== user.id) return deny(request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const done = body.done ? 1 : 0;
-  const notes = body.notes !== undefined ? String(body.notes || "").trim() : item.notes;
-  await env.DB.prepare("UPDATE checklist_items SET done = ?, notes = ? WHERE id = ?").bind(done, notes, id).run();
-  await audit(env, user, "update", "checklist_items", id, done ? "checked" : "unchecked", request, item.is_sample);
+  const notesField = body.notes !== undefined ? vStr(body.notes, { label: "notes", required: false, max: 2000 }) : { value: item.notes };
+  if (notesField.error) return json({ error: notesField.error }, 400, request);
+  const notes = notesField.value;
+  await env.DB.batch([
+    env.DB.prepare("UPDATE checklist_items SET done = ?, notes = ? WHERE id = ?").bind(done, notes, id),
+    auditStmt(env, user, "update", "checklist_items", id, done ? "checked" : "unchecked", request, item.is_sample)
+  ]);
   return json({ item: await env.DB.prepare("SELECT * FROM checklist_items WHERE id = ?").bind(id).first() }, 200, request);
 }
 
@@ -1199,7 +1391,12 @@ async function patchTicket(id, request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const existing = await env.DB.prepare("SELECT * FROM issues WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Issue not found." }, 404, request);
+  if (user.role === "staff" && existing.assigned_to !== user.id && existing.reported_by !== user.id && existing.created_by !== user.id) {
+    return deny(request);
+  }
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const fields = { updated_at: isoNow() };
   if (body.status !== undefined) {
     const status = vOneOf(String(body.status), TICKET_STATUSES, "status");
@@ -1212,8 +1409,18 @@ async function patchTicket(id, request, env, user) {
     if (priority.error) return json({ error: priority.error }, 400, request);
     fields.priority = priority.value;
   }
-  if (body.detail !== undefined) fields.detail = String(body.detail || "").trim();
-  if (body.assigned_to !== undefined && user.role !== "staff") fields.assigned_to = body.assigned_to || null;
+  if (body.detail !== undefined) {
+    const detail = vStr(body.detail, { label: "the details", required: false, max: 4000 });
+    if (detail.error) return json({ error: detail.error }, 400, request);
+    fields.detail = detail.value || "";
+  }
+  if (body.assigned_to !== undefined && user.role !== "staff") {
+    if (body.assigned_to) {
+      const staff = await mustActiveStaff(env, body.assigned_to);
+      if (staff.error) return json({ error: staff.error }, 400, request);
+    }
+    fields.assigned_to = body.assigned_to || null;
+  }
   const keys = Object.keys(fields);
   await env.DB.batch([
     env.DB.prepare(`UPDATE issues SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`).bind(...keys.map((k) => fields[k]), id),
@@ -1232,7 +1439,7 @@ function moveSigned(kind, qty) {
   return 0;
 }
 
-async function listInventoryItems(env, request) {
+async function listInventoryItems(env, request, user) {
   const url = new URL(request.url);
   const category = url.searchParams.get("category") || "";
   const q = (url.searchParams.get("q") || "").trim().toLowerCase();
@@ -1243,44 +1450,56 @@ async function listInventoryItems(env, request) {
   let sql = "SELECT * FROM inventory_items";
   if (clauses.length) sql += ` WHERE ${clauses.join(" AND ")}`;
   sql += " ORDER BY category, name LIMIT 500";
-  return json({ items: await listBy(env, request, sql, params) }, 200, request);
+  const items = await listBy(env, request, sql, params);
+  return json({ items: isOwner(user) ? items : items.map((row) => presentItem(row, user)) }, 200, request);
 }
 
-async function listStock(env, request) {
+async function listStock(env, request, user) {
   const rows = await listBy(env, request, "SELECT * FROM v_stock_on_hand ORDER BY category, name");
-  const low = rows.filter((row) => Number(row.qty_on_hand || 0) <= Number(row.reorder_level || 0));
+  const visible = isOwner(user) ? rows : rows.map((row) => presentItem(row, user));
+  const low = visible.filter((row) => Number(row.qty_on_hand || 0) <= Number(row.reorder_level || 0));
   const locations = await listBy(env, request, "SELECT * FROM stock_locations ORDER BY name");
-  return json({ stock: rows, low, locations }, 200, request);
+  return json({ stock: visible, low, locations }, 200, request);
 }
 
 async function createInventoryItem(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   if (user.role === "staff") return deny(request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
+  if (!isOwner(user) && body.unit_cost !== undefined && body.unit_cost !== null && body.unit_cost !== "") {
+    return denyMoney(request);
+  }
   const name = vStr(body && body.name, { label: "the item name", max: 160 });
   const category = vStr(body && body.category, { label: "the category", max: 80 });
   const unit = vStr(body && body.unit || "pc", { label: "the unit", max: 20 });
   const qty = vInt(body && body.qty_on_hand, { label: "the quantity", min: 0, max: 1000000, required: false });
   const reorder = vInt(body && body.reorder_level, { label: "the reorder level", min: 0, max: 1000000, required: false });
-  const cost = vInt(body && body.unit_cost, { label: "the unit cost", min: 0, max: 10000000, required: false, allowNull: true });
-  if ([name, category, unit, qty, reorder, cost].some((f) => f.error)) return json({ error: (name.error || category.error || unit.error || qty.error || reorder.error || cost.error) }, 400, request);
+  const notes = vStr(body && body.notes, { label: "notes", required: false, max: 2000 });
+  const cost = isOwner(user)
+    ? vInt(body && body.unit_cost, { label: "the unit cost", min: 0, max: 10000000, required: false, allowNull: true })
+    : { value: null };
+  if ([name, category, unit, qty, reorder, notes, cost].some((f) => f.error)) return json({ error: (name.error || category.error || unit.error || qty.error || reorder.error || notes.error || cost.error) }, 400, request);
   const id = randomId();
   const opening = qty.value || 0;
+  const sample = actorSample(user);
   const statements = [
     env.DB.prepare(
       `INSERT INTO inventory_items (id, name, category, unit, qty_on_hand, reorder_level, notes, sku, consumable, unit_cost, location_id, is_sample, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
-    ).bind(id, name.value, category.value, unit.value, opening, reorder.value || 0, body.notes || "", body.sku || "", body.consumable ? 1 : 0, cost.value, body.location_id || null, isoNow())
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, name.value, category.value, unit.value, opening, reorder.value || 0, notes.value || "", body.sku || "", body.consumable ? 1 : 0, cost.value, body.location_id || null, sample, isoNow())
   ];
   if (opening) {
     statements.push(env.DB.prepare(
       `INSERT INTO inventory_moves (id, item_id, kind, qty, signed_qty, event_id, notes, created_at, created_by, is_sample)
-       VALUES (?, ?, 'receive', ?, ?, NULL, 'Opening quantity', ?, ?, 0)`
-    ).bind(randomId(), id, opening, opening, isoNow(), user.id));
+       VALUES (?, ?, 'receive', ?, ?, NULL, 'Opening quantity', ?, ?, ?)`
+    ).bind(randomId(), id, opening, opening, isoNow(), user.id, sample));
   }
-  statements.push(auditStmt(env, user, "create", "inventory_items", id, name.value, request));
+  statements.push(auditStmt(env, user, "create", "inventory_items", id, name.value, request, sample));
   await env.DB.batch(statements);
-  return json({ item: await env.DB.prepare("SELECT * FROM inventory_items WHERE id = ?").bind(id).first() }, 201, request);
+  const item = await env.DB.prepare("SELECT * FROM inventory_items WHERE id = ?").bind(id).first();
+  return json({ item: presentItem(item, user) }, 201, request);
 }
 
 async function patchInventoryItem(id, request, env, user) {
@@ -1289,20 +1508,39 @@ async function patchInventoryItem(id, request, env, user) {
   const existing = await env.DB.prepare("SELECT * FROM inventory_items WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Item not found." }, 404, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
+  if (!isOwner(user) && body.unit_cost !== undefined) return denyMoney(request);
   const fields = { updated_at: isoNow() };
+  const limits = { name: 160, category: 80, unit: 40, notes: 2000, sku: 80 };
   for (const key of ["name", "category", "unit", "notes", "sku"]) {
-    if (body[key] !== undefined) fields[key] = String(body[key] || "").trim();
+    if (body[key] === undefined) continue;
+    const parsed = vStr(body[key], { label: key, required: key === "name", max: limits[key] });
+    if (parsed.error) return json({ error: parsed.error }, 400, request);
+    fields[key] = parsed.value || "";
   }
-  if (body.reorder_level !== undefined) fields.reorder_level = Number(body.reorder_level) || 0;
-  if (body.unit_cost !== undefined) fields.unit_cost = body.unit_cost === "" || body.unit_cost === null ? null : Number(body.unit_cost);
+  if (body.reorder_level !== undefined) {
+    const level = vInt(body.reorder_level, { label: "the reorder level", min: 0, max: 1000000 });
+    if (level.error) return json({ error: level.error }, 400, request);
+    fields.reorder_level = level.value;
+  }
+  if (isOwner(user) && body.unit_cost !== undefined) {
+    if (body.unit_cost === "" || body.unit_cost === null) fields.unit_cost = null;
+    else {
+      const cost = vInt(body.unit_cost, { label: "the unit cost", min: 0, max: 10000000 });
+      if (cost.error) return json({ error: cost.error }, 400, request);
+      fields.unit_cost = cost.value;
+    }
+  }
   if (body.consumable !== undefined) fields.consumable = body.consumable ? 1 : 0;
   if (body.location_id !== undefined) fields.location_id = body.location_id || null;
   const keys = Object.keys(fields);
   await env.DB.batch([
     env.DB.prepare(`UPDATE inventory_items SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`).bind(...keys.map((k) => fields[k]), id),
-    auditStmt(env, user, "update", "inventory_items", id, JSON.stringify(fields), request, existing.is_sample)
+    auditStmt(env, user, "update", "inventory_items", id, JSON.stringify(isOwner(user) ? fields : withoutUnitCost(fields)), request, existing.is_sample)
   ]);
-  return json({ item: await env.DB.prepare("SELECT * FROM inventory_items WHERE id = ?").bind(id).first() }, 200, request);
+  const item = await env.DB.prepare("SELECT * FROM inventory_items WHERE id = ?").bind(id).first();
+  return json({ item: presentItem(item, user) }, 200, request);
 }
 
 async function listMoves(env, request) {
@@ -1329,21 +1567,34 @@ async function createMove(request, env, user) {
   const qty = vInt(body && body.qty, { label: "the quantity", min: kind && kind.value === "adjust" ? -1000000 : 1, max: 1000000 });
   if (kind.error || qty.error) return json({ error: kind.error || qty.error }, 400, request);
   if (user.role === "staff" && !["issue", "return"].includes(kind.value)) return deny(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const item = await env.DB.prepare("SELECT * FROM inventory_items WHERE id = ?").bind(body.item_id).first();
   if (!item) return json({ error: "Item not found." }, 400, request);
+  if (body.event_id) {
+    const ev = await mustEvent(env, body.event_id);
+    if (ev.error) return json({ error: ev.error }, 400, request);
+  }
   const signed = moveSigned(kind.value, qty.value);
-  const nextQty = (item.qty_on_hand || 0) + signed;
-  if (nextQty < 0) return json({ error: "There is not enough stock on hand for that movement." }, 409, request);
+  const notes = vStr(body && body.notes, { label: "notes", required: false, max: 2000 });
+  if (notes.error) return json({ error: notes.error }, 400, request);
   const id = randomId();
-  await env.DB.batch([
+  const now = isoNow();
+  const sample = actorSample(user, item);
+  const results = await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO inventory_moves (id, item_id, kind, qty, signed_qty, event_id, notes, created_at, created_by, is_sample, location_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
-    ).bind(id, item.id, kind.value, Math.abs(qty.value), signed, body.event_id || null, body.notes || "", isoNow(), user.id, body.location_id || item.location_id || null),
-    env.DB.prepare("UPDATE inventory_items SET qty_on_hand = ?, updated_at = ? WHERE id = ?").bind(nextQty, isoNow(), item.id),
-    auditStmt(env, user, "create", "inventory_moves", id, `${kind.value} ${item.name} ${signed}`, request)
+       SELECT ?, id, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       FROM inventory_items
+       WHERE id = ? AND qty_on_hand + ? >= 0`
+    ).bind(id, kind.value, Math.abs(qty.value), signed, body.event_id || null, notes.value || "", now, user.id, sample, body.location_id || item.location_id || null, item.id, signed),
+    env.DB.prepare("UPDATE inventory_items SET qty_on_hand = qty_on_hand + ?, updated_at = ? WHERE id = ? AND EXISTS (SELECT 1 FROM inventory_moves WHERE id = ?)").bind(signed, now, item.id, id)
   ]);
-  return json({ move: await env.DB.prepare("SELECT * FROM inventory_moves WHERE id = ?").bind(id).first(), qty_on_hand: nextQty }, 201, request);
+  const inserted = results[0] && results[0].meta && results[0].meta.changes;
+  if (inserted !== 1) return json({ error: "There is not enough stock on hand for that movement." }, 409, request);
+  await audit(env, user, "create", "inventory_moves", id, `${kind.value} ${item.name} ${signed}`, request, sample);
+  const updated = await env.DB.prepare("SELECT qty_on_hand FROM inventory_items WHERE id = ?").bind(item.id).first();
+  return json({ move: await env.DB.prepare("SELECT * FROM inventory_moves WHERE id = ?").bind(id).first(), qty_on_hand: updated && updated.qty_on_hand }, 201, request);
 }
 
 async function listAllocations(env, request) {
@@ -1366,6 +1617,10 @@ async function createAllocation(request, env, user) {
   const qty = vInt(body && body.qty, { label: "the quantity", min: 1, max: 100000 });
   if (qty.error) return json({ error: qty.error }, 400, request);
   if (!body.event_id || !body.item_id) return json({ error: "Please pick an event and an item." }, 400, request);
+  const ev = await mustEvent(env, body.event_id);
+  if (ev.error) return json({ error: ev.error }, 400, request);
+  const item = await mustItem(env, body.item_id);
+  if (item.error) return json({ error: item.error }, 400, request);
   const id = randomId();
   await env.DB.batch([
     env.DB.prepare(
@@ -1399,15 +1654,24 @@ async function patchSupplier(id, request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   if (user.role === "staff") return deny(request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const existing = await env.DB.prepare("SELECT * FROM suppliers WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Supplier not found." }, 404, request);
   const fields = {};
+  const limits = { name: 160, contact: 160, category: 80, notes: 2000 };
   for (const key of ["name", "contact", "category", "notes"]) {
-    if (body[key] !== undefined) fields[key] = String(body[key] || "").trim();
+    if (body[key] === undefined) continue;
+    const parsed = vStr(body[key], { label: key, required: false, max: limits[key] });
+    if (parsed.error) return json({ error: parsed.error }, 400, request);
+    fields[key] = parsed.value || "";
   }
   const keys = Object.keys(fields);
   if (!keys.length) return json({ supplier: existing }, 200, request);
-  await env.DB.prepare(`UPDATE suppliers SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`).bind(...keys.map((k) => fields[k]), id).run();
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE suppliers SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`).bind(...keys.map((k) => fields[k]), id),
+    auditStmt(env, user, "update", "suppliers", id, JSON.stringify(fields), request, existing.is_sample)
+  ]);
   return json({ supplier: await env.DB.prepare("SELECT * FROM suppliers WHERE id = ?").bind(id).first() }, 200, request);
 }
 
@@ -1686,30 +1950,61 @@ async function listHrStaff(env, request, user) {
 
 async function patchHrStaff(id, request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
-  if (id === user.id && user.role === "owner" && false) return deny(request);
   const person = await env.DB.prepare("SELECT id, role, is_sample FROM users WHERE id = ?").bind(id).first();
   if (!person) return json({ error: "Staff member not found." }, 404, request);
   if (person.role === "owner") return json({ error: "Owner payroll details are not kept here." }, 400, request);
   const body = await readJson(request);
-  if (!isOwner(user) && (body.daily_rate !== undefined || body.hourly_rate !== undefined || body.rate !== undefined)) {
+  const missing = requireBody(body, request);
+  if (missing) return missing;
+  if (!isOwner(user) && (body.daily_rate !== undefined || body.hourly_rate !== undefined || body.rate !== undefined || body.rate_type !== undefined)) {
     return denyMoney(request);
   }
-  if (!isOwner(user)) {
-    body.daily_rate = undefined;
-    body.hourly_rate = undefined;
-    body.rate = undefined;
+  const fields = {};
+  if (body.employment !== undefined) {
+    const employment = vStr(body.employment, { label: "employment", required: false, max: 80 });
+    if (employment.error) return json({ error: employment.error }, 400, request);
+    fields.employment = employment.value || "";
   }
-  const daily = body.daily_rate === undefined || body.daily_rate === "" ? null : Number(body.daily_rate);
-  const hourly = body.hourly_rate === undefined || body.hourly_rate === "" ? null : Number(body.hourly_rate);
-  const rate = body.rate === undefined || body.rate === "" ? (daily || hourly) : Number(body.rate);
-  const rateType = body.rate_type || (hourly && !daily ? "hourly" : "daily");
+  if (body.start_date !== undefined) {
+    const start = vDate(body.start_date, { label: "the start date", required: false });
+    if (start.error) return json({ error: start.error }, 400, request);
+    fields.start_date = start.value || null;
+  }
+  if (body.notes !== undefined) {
+    const notes = vStr(body.notes, { label: "notes", required: false, max: 2000 });
+    if (notes.error) return json({ error: notes.error }, 400, request);
+    fields.notes = notes.value || "";
+  }
+  if (isOwner(user)) {
+    for (const key of ["daily_rate", "hourly_rate", "rate"]) {
+      if (body[key] === undefined) continue;
+      if (body[key] === "" || body[key] === null) {
+        fields[key] = null;
+        fields[`${key}_cents`] = null;
+        continue;
+      }
+      const parsed = vInt(body[key], { label: key.replace("_", " "), min: 0, max: 10000000 });
+      if (parsed.error) return json({ error: parsed.error }, 400, request);
+      fields[key] = parsed.value;
+      fields[`${key}_cents`] = centsFromPesos(parsed.value);
+    }
+    if (body.rate_type !== undefined) {
+      const rateType = vOneOf(String(body.rate_type), ["daily", "hourly"], "rate type");
+      if (rateType.error) return json({ error: rateType.error }, 400, request);
+      fields.rate_type = rateType.value;
+    }
+  }
+  const keys = Object.keys(fields);
+  if (!keys.length) return json({ ok: true }, 200, request);
+  const placeholders = keys.map(() => "?").join(", ");
+  const updates = keys.map((key) => `${key}=excluded.${key}`).join(", ");
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO staff_profiles (user_id, daily_rate, hourly_rate, employment, start_date, notes, is_sample, rate_type, rate, created_at, daily_rate_cents, hourly_rate_cents, rate_cents)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(user_id) DO UPDATE SET daily_rate=excluded.daily_rate, hourly_rate=excluded.hourly_rate, employment=excluded.employment, start_date=excluded.start_date, notes=excluded.notes, rate_type=excluded.rate_type, rate=excluded.rate, daily_rate_cents=excluded.daily_rate_cents, hourly_rate_cents=excluded.hourly_rate_cents, rate_cents=excluded.rate_cents`
-    ).bind(id, daily, hourly, body.employment || "", body.start_date || null, body.notes || "", person.is_sample || 0, rateType, rate, isoNow(), centsFromPesos(daily), centsFromPesos(hourly), centsFromPesos(rate)),
-    auditStmt(env, user, "update", "staff_profiles", id, rateType, request, person.is_sample)
+      `INSERT INTO staff_profiles (user_id, is_sample, created_at, ${keys.join(", ")})
+       VALUES (?, ?, ?, ${placeholders})
+       ON CONFLICT(user_id) DO UPDATE SET ${updates}`
+    ).bind(id, person.is_sample || 0, isoNow(), ...keys.map((key) => fields[key])),
+    auditStmt(env, user, "update", "staff_profiles", id, keys.join(","), request, person.is_sample)
   ]);
   return json({ ok: true }, 200, request);
 }
@@ -1724,48 +2019,66 @@ async function listPayroll(env, request, user) {
   const by = {};
   for (const line of lines) {
     if (!by[line.period_id]) by[line.period_id] = [];
-    by[line.period_id].push(line);
+    by[line.period_id].push({ ...line, contributionsEstimated: true });
   }
-  return json({ periods: periods.map((row) => ({ ...row, lines: by[row.id] || [] })), statuses: PAYROLL_STATUSES }, 200, request);
+  return json({
+    periods: periods.map((row) => ({ ...row, lines: by[row.id] || [], contributionEstimates: true })),
+    statuses: PAYROLL_STATUSES,
+    contributionEstimates: true,
+    contributionNote: "SSS, PhilHealth, Pag-IBIG and withholding tax are estimates until official contribution tables are confirmed."
+  }, 200, request);
 }
 
 async function createPayrollPeriod(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const start = vDate(body && body.start_date, { label: "the start date" });
   const end = vDate(body && body.end_date, { label: "the end date" });
   if (start.error || end.error) return json({ error: start.error || end.error }, 400, request);
-  const profiles = await listBy(env, request, `SELECT u.id, u.is_sample, p.daily_rate, p.rate FROM users u LEFT JOIN staff_profiles p ON p.user_id = u.id WHERE u.role != 'owner' AND IFNULL(u.is_active,1)=1`);
+  if (end.value < start.value) return json({ error: "The end date cannot be before the start date." }, 400, request);
+  const sample = actorSample(user);
+  const profiles = await listBy(env, request, `SELECT u.id, u.is_sample, p.daily_rate, p.rate FROM users u LEFT JOIN staff_profiles p ON p.user_id = u.id WHERE u.role != 'owner' AND IFNULL(u.is_active,1)=1 AND IFNULL(u.is_sample,0) = ?`, [sample]);
   const attendance = await listBy(env, request, "SELECT staff_id, date FROM attendance WHERE date >= ? AND date <= ? AND time_in IS NOT NULL", [start.value, end.value]);
-  const advances = await listBy(env, request, "SELECT user_id, SUM(amount) AS amount FROM cash_advances WHERE status = 'open' AND date <= ? GROUP BY user_id", [end.value]);
-  const advMap = Object.fromEntries(advances.map((row) => [row.user_id, row.amount || 0]));
+  const openAdvances = await listBy(env, request, "SELECT id, user_id, amount, date FROM cash_advances WHERE status = 'open' AND date <= ? AND IFNULL(is_sample,0) = ? ORDER BY date, id", [end.value, sample]);
+  const advByUser = {};
+  for (const row of openAdvances) {
+    if (!advByUser[row.user_id]) advByUser[row.user_id] = [];
+    advByUser[row.user_id].push(row);
+  }
   const daysMap = {};
-  for (const row of attendance) daysMap[row.staff_id] = (daysMap[row.staff_id] || 0) + 1;
+  for (const row of attendance) {
+    if (!daysMap[row.staff_id]) daysMap[row.staff_id] = new Set();
+    daysMap[row.staff_id].add(row.date);
+  }
   const id = randomId();
   const statements = [
     env.DB.prepare(
       `INSERT INTO payroll_periods (id, start_date, end_date, status, notes, created_at, created_by, is_sample)
-       VALUES (?, ?, ?, 'draft', ?, ?, ?, 0)`
-    ).bind(id, start.value, end.value, body.notes || "", isoNow(), user.id)
+       VALUES (?, ?, ?, 'draft', ?, ?, ?, ?)`
+    ).bind(id, start.value, end.value, clipText(body.notes || "", 2000), isoNow(), user.id, sample)
   ];
   for (const person of profiles) {
-    const daysWorked = daysMap[person.id] || 0;
+    const daysWorked = daysMap[person.id] ? daysMap[person.id].size : 0;
     const daily = person.daily_rate || person.rate || 0;
     const gross = Math.round(daysWorked * daily);
     const sss = Math.round(gross * 0.045);
     const philhealth = Math.round(gross * 0.025);
     const pagibig = Math.min(100, Math.round(gross * 0.02));
     const wtax = 0;
-    const adv = advMap[person.id] || 0;
-    const net = Math.max(gross - sss - philhealth - pagibig - wtax - adv, 0);
+    const afterGovt = gross - sss - philhealth - pagibig - wtax;
+    const { applied, appliedIds } = applyOpenAdvances(advByUser[person.id] || [], Math.max(afterGovt, 0));
+    const net = Math.max(afterGovt - applied, 0);
     statements.push(env.DB.prepare(
-      `INSERT INTO payroll_lines (id, period_id, user_id, days_worked, hours_worked, gross, sss, philhealth, pagibig, wtax, advances, other_deductions, net, notes, is_sample, gross_cents, sss_cents, philhealth_cents, pagibig_cents, wtax_cents, advances_cents, net_cents)
-       VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, 0, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(randomId(), id, person.id, daysWorked, gross, sss, philhealth, pagibig, wtax, adv, net, person.is_sample || 0, centsFromPesos(gross), centsFromPesos(sss), centsFromPesos(philhealth), centsFromPesos(pagibig), centsFromPesos(wtax), centsFromPesos(adv), centsFromPesos(net)));
+      `INSERT INTO payroll_lines (id, period_id, user_id, days_worked, hours_worked, gross, sss, philhealth, pagibig, wtax, advances, other_deductions, net, notes, is_sample, gross_cents, sss_cents, philhealth_cents, pagibig_cents, wtax_cents, advances_cents, net_cents, advance_ids, contributions_estimated)
+       VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, 0, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+    ).bind(randomId(), id, person.id, daysWorked, gross, sss, philhealth, pagibig, wtax, applied, net, person.is_sample || 0, centsFromPesos(gross), centsFromPesos(sss), centsFromPesos(philhealth), centsFromPesos(pagibig), centsFromPesos(wtax), centsFromPesos(applied), centsFromPesos(net), appliedIds.join(",") || null));
   }
-  statements.push(auditStmt(env, user, "create", "payroll_periods", id, `${start.value} ${end.value}`, request));
+  statements.push(auditStmt(env, user, "create", "payroll_periods", id, `${start.value} ${end.value}`, request, sample));
   await env.DB.batch(statements);
-  return json({ period: await env.DB.prepare("SELECT * FROM payroll_periods WHERE id = ?").bind(id).first() }, 201, request);
+  const period = await env.DB.prepare("SELECT * FROM payroll_periods WHERE id = ?").bind(id).first();
+  return json({ period, contributionEstimates: true }, 201, request);
 }
 
 async function patchPayrollPeriod(id, request, env, user) {
@@ -1773,17 +2086,27 @@ async function patchPayrollPeriod(id, request, env, user) {
   const existing = await env.DB.prepare("SELECT * FROM payroll_periods WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Payroll period not found." }, 404, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
+  if (existing.status === "paid") return json({ error: "A paid payroll period is locked." }, 409, request);
   const status = vOneOf(String(body.status || existing.status), PAYROLL_STATUSES, "status");
   if (status.error) return json({ error: status.error }, 400, request);
   const statements = [
-    env.DB.prepare("UPDATE payroll_periods SET status = ?, notes = ? WHERE id = ?").bind(status.value, body.notes !== undefined ? String(body.notes) : existing.notes, id)
+    env.DB.prepare("UPDATE payroll_periods SET status = ?, notes = ? WHERE id = ?").bind(status.value, body.notes !== undefined ? clipText(body.notes, 2000) : existing.notes, id)
   ];
   if (status.value === "paid" && existing.status !== "paid") {
-    statements.push(env.DB.prepare("UPDATE cash_advances SET status = 'deducted' WHERE status = 'open' AND user_id IN (SELECT user_id FROM payroll_lines WHERE period_id = ? AND advances > 0)").bind(id));
+    const lines = await listBy(env, request, "SELECT user_id, advances, advance_ids FROM payroll_lines WHERE period_id = ?", [id]);
+    const ids = [];
+    for (const line of lines) {
+      String(line.advance_ids || "").split(",").map((part) => part.trim()).filter(Boolean).forEach((part) => ids.push(part));
+    }
+    if (ids.length) {
+      statements.push(env.DB.prepare(`UPDATE cash_advances SET status = 'deducted' WHERE status = 'open' AND id IN (${ids.map(() => "?").join(",")})`).bind(...ids));
+    }
   }
   statements.push(auditStmt(env, user, "update", "payroll_periods", id, status.value, request, existing.is_sample));
   await env.DB.batch(statements);
-  return json({ period: await env.DB.prepare("SELECT * FROM payroll_periods WHERE id = ?").bind(id).first() }, 200, request);
+  return json({ period: await env.DB.prepare("SELECT * FROM payroll_periods WHERE id = ?").bind(id).first(), contributionEstimates: true }, 200, request);
 }
 
 async function listAdvances(env, request) {
@@ -1837,20 +2160,26 @@ async function listLeave(env, request, user) {
 async function createLeave(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const staffId = user.role === "staff" ? user.id : (body.user_id || user.id);
+  const person = await mustActiveStaff(env, staffId);
+  if (person.error) return json({ error: person.error }, 400, request);
   const kind = vOneOf(String(body && body.kind || "vacation"), LEAVE_KINDS, "leave type");
   const start = vDate(body && body.start_date, { label: "the start date" });
   const end = vDate(body && body.end_date || (body && body.start_date), { label: "the end date" });
   const reason = vStr(body && body.reason, { label: "the reason", required: false, max: 400 });
   if (kind.error || start.error || end.error || reason.error) return json({ error: kind.error || start.error || end.error || reason.error }, 400, request);
-  const days = Math.max(1, Math.round((new Date(`${end.value}T00:00:00+08:00`) - new Date(`${start.value}T00:00:00+08:00`)) / 86400000) + 1);
+  if (end.value < start.value) return json({ error: "The end date cannot be before the start date." }, 400, request);
+  const days = Math.round((new Date(`${end.value}T00:00:00+08:00`) - new Date(`${start.value}T00:00:00+08:00`)) / 86400000) + 1;
   const id = randomId();
+  const sample = actorSample(user, person.row);
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO leave_requests (id, user_id, kind, start_date, end_date, days, reason, status, created_at, is_sample)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0)`
-    ).bind(id, staffId, kind.value, start.value, end.value, days, reason.value, isoNow()),
-    auditStmt(env, user, "create", "leave_requests", id, kind.value, request)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+    ).bind(id, staffId, kind.value, start.value, end.value, days, reason.value, isoNow(), sample),
+    auditStmt(env, user, "create", "leave_requests", id, kind.value, request, sample)
   ]);
   return json({ request: await env.DB.prepare("SELECT * FROM leave_requests WHERE id = ?").bind(id).first() }, 201, request);
 }
@@ -1860,6 +2189,8 @@ async function patchLeave(id, request, env, user) {
   const existing = await env.DB.prepare("SELECT * FROM leave_requests WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Leave request not found." }, 404, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   if (user.role === "staff") {
     if (existing.user_id !== user.id) return deny(request);
     if (String(body.status) !== "cancelled") return json({ error: "You can only cancel your own leave request." }, 400, request);

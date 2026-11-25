@@ -14,15 +14,24 @@ Google Sheets is not connected yet. D1 is the source of truth. A later step can 
 
 ## Deploy
 
+`src/index.js` imports `handleOps` from `src/ops.js`, so a plain Wrangler deploy includes every operations route. Do not concatenate the files by hand.
+
 From this folder, with Wrangler logged in to the same Cloudflare account that owns migranjaevents.com:
 
 ```
+npx wrangler d1 migrations apply migranja-portal --remote
 npx wrangler deploy
+node scripts/smoke.mjs
 ```
+
+`scripts/smoke.mjs` signs in with the SAMPLE accounts in `.sample-staff` (that file is gitignored) and creates one sample record per new module. It never prints passwords or tokens.
+
+If a deploy path needs a single Worker file, run `node scripts/bundle-worker.mjs` and upload `artifacts/worker.js`. That folder is gitignored.
 
 Secrets (never commit these):
 
 - None are required in source. Session IDs are random and stored in D1.
+- `.sample-staff` holds SAMPLE test logins only. Keep it mode 600 and never paste those passwords into chat or logs.
 
 ## First owner sign-in
 

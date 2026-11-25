@@ -2,6 +2,7 @@
  * Mi Granja staff portal and booking API.
  * Data lives in a private D1 database. Secrets are Worker bindings, never in source.
  */
+import { handleOps } from "./ops.js";
 
 const ALLOWED_ORIGINS = [
   "https://www.migranjaevents.com",
@@ -305,6 +306,26 @@ const ALLOW_WHILE_PASSWORD_CHANGE = new Set([
   "POST /api/auth/logout-all"
 ]);
 
+export {
+  HELD_STATUSES,
+  allow,
+  audit,
+  auditStmt,
+  dateVenueTaken,
+  deny,
+  eventColumns,
+  isoNow,
+  json,
+  originAllowed,
+  randomId,
+  readJson,
+  todayISO,
+  vDate,
+  vInt,
+  vOneOf,
+  vStr
+};
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -503,10 +524,8 @@ async function handle(request, env, url, requestId) {
     return listAudit(env, request);
   }
 
-  if (typeof handleOps === "function") {
-    const opsResponse = await handleOps(request, env, url, user);
-    if (opsResponse) return opsResponse;
-  }
+  const opsResponse = await handleOps(request, env, url, user);
+  if (opsResponse) return opsResponse;
 
   return json({ error: "Not found." }, 404, request);
 }
@@ -752,8 +771,14 @@ function normalizeEventStatus(value) {
   return found || null;
 }
 
+function isPlainNumber(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
 function csvEscape(value) {
+  if (isPlainNumber(value)) return String(value);
   let text = value === null || value === undefined ? "" : String(value);
+  if (/^-?\d+(\.\d+)?$/.test(text.trim())) return text.trim();
   if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
   if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
   return text;
@@ -768,7 +793,14 @@ function toCsv(rows, columns) {
 function toExcelXml(rows, columns, sheetName) {
   const header = columns.map((col) => `<Cell><Data ss:Type="String">${xmlEscape(col.label)}</Data></Cell>`).join("");
   const body = (rows || []).map((row) => {
-    const cells = columns.map((col) => `<Cell><Data ss:Type="String">${xmlEscape(row[col.key])}</Data></Cell>`).join("");
+    const cells = columns.map((col) => {
+      const value = row[col.key];
+      if (isPlainNumber(value) || (col.type === "number" && value !== null && value !== undefined && value !== "")) {
+        const n = Number(value);
+        if (Number.isFinite(n)) return `<Cell><Data ss:Type="Number">${n}</Data></Cell>`;
+      }
+      return `<Cell><Data ss:Type="String">${xmlEscape(value)}</Data></Cell>`;
+    }).join("");
     return `<Row>${cells}</Row>`;
   }).join("");
   return `<?xml version="1.0"?>
@@ -779,7 +811,9 @@ function toExcelXml(rows, columns, sheetName) {
 }
 
 function xmlEscape(value) {
+  if (isPlainNumber(value)) return String(value);
   let text = String(value ?? "");
+  if (/^-?\d+(\.\d+)?$/.test(text.trim())) return text.trim();
   if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
   return text.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 }
@@ -845,10 +879,15 @@ async function completePastEvents(env) {
 async function runScheduledSweeps(env) {
   const expired = await expirePendings(env);
   const completed = await completePastEvents(env);
+  const now = isoNow();
+  await env.DB.prepare(
+    `INSERT INTO rate_limits (key, count, window_start) VALUES ('sweep:last', 1, ?)
+     ON CONFLICT(key) DO UPDATE SET count = count + 1, window_start = excluded.window_start`
+  ).bind(now).run();
   if (expired || completed) {
     await audit(env, { id: "system", role: "system" }, "sweep", "system", null, `Expired ${expired} pending request(s); completed ${completed} past event(s).`, null, 0);
   }
-  return { expired, completed };
+  return { expired, completed, lastSweepAt: now };
 }
 
 async function dateVenueTaken(env, date, venue, exceptId) {
@@ -1386,11 +1425,11 @@ async function decideRequest(id, request, env, user) {
         ).bind(eventId, now, user.id, id),
         env.DB.prepare(
           "UPDATE requests SET status = 'approved', decided_at = ?, decided_by = ?, decline_reason = NULL WHERE id = ? AND status = 'pending'"
-        ).bind(now, user.id, id),
-        auditStmt(env, user, "approve", "requests", id, `Created event ${eventId}`, request, req.is_sample)
+        ).bind(now, user.id, id)
       ]);
       const inserted = results[0] && results[0].meta && results[0].meta.changes;
       if (inserted !== 1) return json({ error: "This request is no longer pending." }, 409, request);
+      await audit(env, user, "approve", "requests", id, `Created event ${eventId}`, request, req.is_sample);
     } catch (err) {
       const message = String(err && err.message ? err.message : err);
       if (/UNIQUE constraint failed/i.test(message)) {
@@ -1473,6 +1512,7 @@ async function createShift(request, env, user) {
 async function patchShift(id, request, env, user) {
   if (!originAllowed(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  if (!body || typeof body !== "object") return json({ error: "Please send the details as JSON." }, 400, request);
   const existing = await env.DB.prepare("SELECT * FROM shifts WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Shift not found." }, 404, request);
   const fields = {};
@@ -1835,7 +1875,7 @@ async function patchUser(id, request, env, actor) {
   }
   if (existing.role === "owner" && (nextRole !== "owner" || nextActive === 0)) {
     const others = await env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND IFNULL(is_active, 1) = 1 AND id != ?"
+      "SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND IFNULL(is_active, 1) = 1 AND IFNULL(is_sample, 0) = 0 AND id != ?"
     ).bind(id).first();
     if (!others || Number(others.n) < 1) {
       return json({ error: "There must be at least one active owner account." }, 400, request);
@@ -1948,13 +1988,8 @@ async function findSampleBlockers(env) {
   const found = [];
   for (const [table, col, target] of SAMPLE_FK_REFS) {
     const sql = `SELECT '${table}' AS src, id FROM ${table} WHERE IFNULL(is_sample, 0) = 0 AND ${col} IS NOT NULL AND ${col} IN (SELECT id FROM ${target} WHERE IFNULL(is_sample, 0) = 1) LIMIT 20`;
-    try {
-      const { results } = await env.DB.prepare(sql).all();
-      if (results && results.length) found.push(...results);
-    } catch (err) {
-      const message = String(err && err.message ? err.message : err);
-      if (!/no such table|no such column/i.test(message)) throw err;
-    }
+    const { results } = await env.DB.prepare(sql).all();
+    if (results && results.length) found.push(...results);
   }
   const profiles = await env.DB.prepare(
     "SELECT 'staff_profiles' AS src, user_id AS id FROM staff_profiles WHERE IFNULL(is_sample, 0) = 0 AND user_id IN (SELECT id FROM users WHERE IFNULL(is_sample, 0) = 1) LIMIT 20"
@@ -1974,8 +2009,7 @@ async function removeSample(request, env, user) {
     }, 409, request);
   }
   const results = await env.DB.batch([
-    env.DB.prepare("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE IFNULL(is_sample, 0) = 1 AND role != 'owner')"),
-    env.DB.prepare("DELETE FROM audit_log WHERE IFNULL(is_sample, 0) = 1"),
+    env.DB.prepare("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE IFNULL(is_sample, 0) = 1)"),
     env.DB.prepare("DELETE FROM quote_lines WHERE IFNULL(is_sample, 0) = 1"),
     env.DB.prepare("DELETE FROM po_lines WHERE IFNULL(is_sample, 0) = 1"),
     env.DB.prepare("DELETE FROM hk_template_items WHERE IFNULL(is_sample, 0) = 1"),
@@ -2014,8 +2048,8 @@ async function removeSample(request, env, user) {
     env.DB.prepare("DELETE FROM announcements WHERE IFNULL(is_sample, 0) = 1"),
     env.DB.prepare("DELETE FROM events WHERE IFNULL(is_sample, 0) = 1"),
     env.DB.prepare("DELETE FROM requests WHERE IFNULL(is_sample, 0) = 1"),
-    env.DB.prepare("DELETE FROM users WHERE IFNULL(is_sample, 0) = 1 AND role != 'owner'"),
-    auditStmt(env, user, "remove_sample", "sample", null, "Owner removed sample data", request)
+    auditStmt(env, user, "remove_sample", "sample", null, "Owner removed sample data", request),
+    env.DB.prepare("DELETE FROM users WHERE IFNULL(is_sample, 0) = 1")
   ]);
   const failed = results.some((row) => row && row.success === false);
   if (failed) return json({ error: "Could not remove all sample data. Please try again." }, 500, request);

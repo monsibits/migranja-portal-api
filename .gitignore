@@ -7,3 +7,4 @@ node_modules/
 backups/
 .export-token
 .sheets-setup
+artifacts/
