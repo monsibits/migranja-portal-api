@@ -124,7 +124,11 @@ function presentItem(row, user) {
 async function mustRow(env, sql, id, label) {
   if (!id) return { error: `Please pick ${label}.` };
   const row = await env.DB.prepare(sql).bind(id).first();
-  if (!row) return { error: `${label} was not found.` };
+  if (!row) {
+    const name = String(label || "record").replace(/^(an?|the)\s+/i, "");
+    const titled = name.charAt(0).toUpperCase() + name.slice(1);
+    return { error: `${titled} not found.` };
+  }
   return { row };
 }
 
@@ -315,6 +319,11 @@ export async function handleOps(request, env, url, user) {
         return fn(id, request, env, user);
       }
     }
+    if (parts[1] === "hk" && parts[2] === "templates" && parts.length === 4) {
+      if (!allow(user, "housekeeping", "write")) return deny(request);
+      if (user.role === "staff") return deny(request);
+      return patchHkTemplate(parts[3], request, env, user);
+    }
     if (parts[1] === "hk" && parts[2] === "jobs" && parts.length === 4) {
       if (!allow(user, "housekeeping", "write")) return deny(request);
       return patchHkJob(parts[3], request, env, user);
@@ -379,25 +388,88 @@ function monthRange(year, month) {
   return { from: `${year}-${mm}-01`, to: `${year}-${mm}-${String(last).padStart(2, "0")}`, days: last };
 }
 
-async function nextSerial(env, key) {
+async function nextSerial(env, key, sample = 0) {
   const spec = SERIAL_SPECS[key];
   if (!spec) throw new Error("Unknown serial");
+  const prefix = sample ? `${spec.prefix}-S` : spec.prefix;
+  const like = `${prefix}-%`;
   const sql = spec.table === "quotes" && spec.column === "number"
-    ? "SELECT number AS n FROM quotes WHERE number LIKE ? ORDER BY number DESC LIMIT 1"
+    ? (sample
+      ? "SELECT number AS n FROM quotes WHERE number LIKE ? ORDER BY LENGTH(number) DESC, number DESC LIMIT 1"
+      : "SELECT number AS n FROM quotes WHERE number LIKE ? AND number NOT LIKE 'MG-Q-S-%' ORDER BY LENGTH(number) DESC, number DESC LIMIT 1")
     : spec.table === "contracts" && spec.column === "number"
-      ? "SELECT number AS n FROM contracts WHERE number LIKE ? ORDER BY number DESC LIMIT 1"
+      ? (sample
+        ? "SELECT number AS n FROM contracts WHERE number LIKE ? ORDER BY LENGTH(number) DESC, number DESC LIMIT 1"
+        : "SELECT number AS n FROM contracts WHERE number LIKE ? AND number NOT LIKE 'MG-C-S-%' ORDER BY LENGTH(number) DESC, number DESC LIMIT 1")
       : spec.table === "payments" && spec.column === "receipt_no"
-        ? "SELECT receipt_no AS n FROM payments WHERE receipt_no LIKE ? ORDER BY receipt_no DESC LIMIT 1"
+        ? (sample
+          ? "SELECT receipt_no AS n FROM payments WHERE receipt_no LIKE ? ORDER BY LENGTH(receipt_no) DESC, receipt_no DESC LIMIT 1"
+          : "SELECT receipt_no AS n FROM payments WHERE receipt_no LIKE ? AND receipt_no NOT LIKE 'MG-OR-S-%' ORDER BY LENGTH(receipt_no) DESC, receipt_no DESC LIMIT 1")
         : spec.table === "expenses" && spec.column === "receipt_no"
-          ? "SELECT receipt_no AS n FROM expenses WHERE receipt_no LIKE ? ORDER BY receipt_no DESC LIMIT 1"
+          ? (sample
+            ? "SELECT receipt_no AS n FROM expenses WHERE receipt_no LIKE ? ORDER BY LENGTH(receipt_no) DESC, receipt_no DESC LIMIT 1"
+            : "SELECT receipt_no AS n FROM expenses WHERE receipt_no LIKE ? AND receipt_no NOT LIKE 'MG-EX-S-%' ORDER BY LENGTH(receipt_no) DESC, receipt_no DESC LIMIT 1")
           : spec.table === "pos" || (spec.table === "purchase_orders" && spec.column === "number")
-            ? "SELECT number AS n FROM purchase_orders WHERE number LIKE ? ORDER BY number DESC LIMIT 1"
+            ? (sample
+              ? "SELECT number AS n FROM purchase_orders WHERE number LIKE ? ORDER BY LENGTH(number) DESC, number DESC LIMIT 1"
+              : "SELECT number AS n FROM purchase_orders WHERE number LIKE ? AND number NOT LIKE 'MG-PO-S-%' ORDER BY LENGTH(number) DESC, number DESC LIMIT 1")
             : null;
   if (!sql) throw new Error("Unknown serial");
-  const row = await env.DB.prepare(sql).bind(`${spec.prefix}-%`).first();
+  const row = await env.DB.prepare(sql).bind(like).first();
   const current = row && row.n ? Number(String(row.n).split("-").pop()) : 0;
   const next = (Number.isFinite(current) ? current : 0) + 1;
-  return `${spec.prefix}-${String(next).padStart(4, "0")}`;
+  return `${prefix}-${String(next).padStart(4, "0")}`;
+}
+
+function isUniqueConstraintError(err) {
+  return /UNIQUE constraint failed/i.test(String(err && err.message ? err.message : err || ""));
+}
+
+async function runWithSerialRetry(env, key, sample, request, work) {
+  let last = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const number = await nextSerial(env, key, sample);
+    try {
+      return await work(number);
+    } catch (err) {
+      last = err;
+      if (!isUniqueConstraintError(err)) throw err;
+    }
+  }
+  return json({ error: "That document number is already in use. Please try again." }, 409, request);
+}
+
+function hoursBetween(timeIn, timeOut) {
+  if (!timeIn || !timeOut) return 0;
+  const [ih, im] = String(timeIn).split(":").map(Number);
+  const [oh, om] = String(timeOut).split(":").map(Number);
+  if (![ih, im, oh, om].every(Number.isFinite)) return 0;
+  const start = ih * 60 + im;
+  const end = oh * 60 + om;
+  if (end <= start) return 0;
+  return (end - start) / 60;
+}
+
+function parseItemLabels(raw) {
+  if (raw == null || raw === "") return { labels: [] };
+  if (!Array.isArray(raw)) return { error: "Please send the checklist items as a list." };
+  if (raw.length > 100) return { error: "Please keep the checklist to 100 items or fewer." };
+  const labels = [];
+  for (const item of raw) {
+    if (item == null) return { error: "Each checklist item needs a label." };
+    if (typeof item === "string") {
+      const text = item.trim();
+      if (text) labels.push(text.slice(0, 200));
+      continue;
+    }
+    if (typeof item === "object" && item.label != null) {
+      const text = String(item.label).trim();
+      if (text) labels.push(text.slice(0, 200));
+      continue;
+    }
+    return { error: "Each checklist item needs a label." };
+  }
+  return { labels };
 }
 
 async function dashboard(env, request, user) {
@@ -523,6 +595,8 @@ async function listClients(env, request) {
 async function createClient(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const name = vStr(body && body.name, { label: "the client name", max: 120 });
   const contact = vStr(body && body.contact, { label: "the contact", required: false, max: 80 });
   const email = vStr(body && body.email, { label: "the email", required: false, max: 80 });
@@ -533,12 +607,13 @@ async function createClient(request, env, user) {
   }
   const id = randomId();
   const now = isoNow();
+  const sample = actorSample(user);
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO clients (id, name, contact, email, company, notes, created_at, created_by, is_sample)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`
-    ).bind(id, name.value, contact.value, email.value, company.value, notes.value, now, user.id),
-    auditStmt(env, user, "create", "clients", id, name.value, request)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, name.value, contact.value, email.value, company.value, notes.value, now, user.id, sample),
+    auditStmt(env, user, "create", "clients", id, name.value, request, sample)
   ]);
   const client = await env.DB.prepare("SELECT * FROM clients WHERE id = ?").bind(id).first();
   return json({ client }, 201, request);
@@ -547,6 +622,8 @@ async function createClient(request, env, user) {
 async function patchClient(id, request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const existing = await env.DB.prepare("SELECT * FROM clients WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Client not found." }, 404, request);
   const fields = {};
@@ -581,6 +658,8 @@ async function listPackages(env, request, user) {
 async function createPackage(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const name = vStr(body && body.name, { label: "the package name", max: 120 });
   const venue = vStr(body && body.venue, { label: "the venue", required: false, max: 80 });
   const description = vStr(body && body.description, { label: "the description", required: false, max: 2000 });
@@ -593,12 +672,13 @@ async function createPackage(request, env, user) {
     if (field.error) return json({ error: field.error }, 400, request);
   }
   const id = randomId();
+  const sample = actorSample(user);
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO packages (id, name, venue, description, base_fee, included_pax, extra_pax_price, hours, inclusions, is_active, is_sample, created_at, created_by, base_fee_cents, extra_pax_price_cents)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)`
-    ).bind(id, name.value, venue.value, description.value, base.value, pax.value, extra.value, hours.value, inclusions.value, isoNow(), user.id, centsFromPesos(base.value), centsFromPesos(extra.value)),
-    auditStmt(env, user, "create", "packages", id, name.value, request)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`
+    ).bind(id, name.value, venue.value, description.value, base.value, pax.value, extra.value, hours.value, inclusions.value, sample, isoNow(), user.id, centsFromPesos(base.value), centsFromPesos(extra.value)),
+    auditStmt(env, user, "create", "packages", id, name.value, request, sample)
   ]);
   return json({ package: await env.DB.prepare("SELECT * FROM packages WHERE id = ?").bind(id).first() }, 201, request);
 }
@@ -606,6 +686,8 @@ async function createPackage(request, env, user) {
 async function patchPackage(id, request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const existing = await env.DB.prepare("SELECT * FROM packages WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Package not found." }, 404, request);
   const fields = { updated_at: isoNow() };
@@ -658,6 +740,8 @@ async function listLeads(env, request) {
 async function createLead(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const name = vStr(body && body.name, { label: "the name", max: 120 });
   const contact = vStr(body && body.contact, { label: "the contact", required: false, max: 80 });
   const source = vStr(body && body.source, { label: "the source", required: false, max: 80 });
@@ -671,12 +755,13 @@ async function createLead(request, env, user) {
     if (field.error) return json({ error: field.error }, 400, request);
   }
   const id = randomId();
+  const sample = actorSample(user);
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO leads (id, name, contact, source, status, notes, request_id, client_id, assigned_to, event_date, venue, pax, type, created_at, created_by, is_sample)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
-    ).bind(id, name.value, contact.value, source.value, status.value, notes.value, body.request_id || null, body.client_id || null, body.assigned_to || null, eventDate.value || null, venue.value, pax.value, type.value, isoNow(), user.id),
-    auditStmt(env, user, "create", "leads", id, name.value, request)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, name.value, contact.value, source.value, status.value, notes.value, body.request_id || null, body.client_id || null, body.assigned_to || null, eventDate.value || null, venue.value, pax.value, type.value, isoNow(), user.id, sample),
+    auditStmt(env, user, "create", "leads", id, name.value, request, sample)
   ]);
   return json({ lead: await env.DB.prepare("SELECT * FROM leads WHERE id = ?").bind(id).first() }, 201, request);
 }
@@ -684,6 +769,8 @@ async function createLead(request, env, user) {
 async function patchLead(id, request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const existing = await env.DB.prepare("SELECT * FROM leads WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Lead not found." }, 404, request);
   const fields = { updated_at: isoNow() };
@@ -762,7 +849,7 @@ async function insertQuoteStatements(env, user, request, payload) {
       id, number, payload.lead_id || null, payload.request_id || null, payload.event_id || null, payload.client_id || null,
       payload.client_name, payload.contact || "", payload.event_date || null, payload.venue || "", payload.package_id || null,
       JSON.stringify(payload.lines || []), totals.subtotal, totals.discount, totals.total, payload.status, payload.valid_until || null,
-      payload.notes || "", now, user.id, payload.is_sample || 0, centsFromPesos(totals.subtotal), centsFromPesos(totals.discount), centsFromPesos(totals.total)
+      payload.notes || "", now, user.id, payload.is_sample ? 1 : actorSample(user), centsFromPesos(totals.subtotal), centsFromPesos(totals.discount), centsFromPesos(totals.total)
     )
   ];
   (payload.lines || []).forEach((line, index) => {
@@ -771,15 +858,17 @@ async function insertQuoteStatements(env, user, request, payload) {
     statements.push(env.DB.prepare(
       `INSERT INTO quote_lines (id, quote_id, label, qty, unit_price, amount, sort_order, is_sample, unit_price_cents, amount_cents)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(randomId(), id, String(line.label || "Item").slice(0, 200), qty, unit, qty * unit, index, payload.is_sample || 0, centsFromPesos(unit), centsFromPesos(qty * unit)));
+    ).bind(randomId(), id, String(line.label || "Item").slice(0, 200), qty, unit, qty * unit, index, payload.is_sample ? 1 : actorSample(user), centsFromPesos(unit), centsFromPesos(qty * unit)));
   });
-  statements.push(auditStmt(env, user, "create", "quotes", id, number, request, payload.is_sample || 0));
+  statements.push(auditStmt(env, user, "create", "quotes", id, number, request, payload.is_sample ? 1 : actorSample(user)));
   return { id, statements, totals };
 }
 
 async function createQuote(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const clientName = vStr(body && body.client_name, { label: "the client name", max: 120 });
   const status = vOneOf(String(body && body.status || "draft"), QUOTE_STATUSES, "quote status");
   const discount = vInt(body && body.discount, { label: "the discount", min: 0, max: 100000000, required: false });
@@ -795,9 +884,19 @@ async function createQuote(request, env, user) {
       ? [{ label: "Package", qty: 1, unit_price: Number(body.base_fee || 0) }]
       : [];
   if (!lines.length) return json({ error: "Please add at least one line to the quote." }, 400, request);
-  const number = await nextSerial(env, "quotes");
+  let sample = actorSample(user);
+  if (body.lead_id) {
+    const lead = await env.DB.prepare("SELECT is_sample FROM leads WHERE id = ?").bind(body.lead_id).first();
+    if (lead) sample = actorSample(user, lead);
+  }
+  if (body.client_id) {
+    const client = await env.DB.prepare("SELECT is_sample FROM clients WHERE id = ?").bind(body.client_id).first();
+    if (client) sample = actorSample(user, client);
+  }
+  return runWithSerialRetry(env, "quotes", sample, request, async (number) => {
   const built = await insertQuoteStatements(env, user, request, {
     number,
+    is_sample: sample,
     lead_id: body.lead_id,
     request_id: body.request_id,
     event_id: body.event_id,
@@ -820,11 +919,14 @@ async function createQuote(request, env, user) {
   const quote = await env.DB.prepare("SELECT * FROM quotes WHERE id = ?").bind(built.id).first();
   const quoteLines = await listBy(env, request, "SELECT * FROM quote_lines WHERE quote_id = ? ORDER BY sort_order", [built.id]);
   return json({ quote: { ...quote, lines: quoteLines } }, 201, request);
+  });
 }
 
 async function patchQuote(id, request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const existing = await env.DB.prepare("SELECT * FROM quotes WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Quote not found." }, 404, request);
   const fields = { updated_at: isoNow() };
@@ -887,7 +989,8 @@ async function acceptQuote(id, request, env, user) {
   const now = isoNow();
   const eventId = quote.event_id || randomId();
   const contractId = randomId();
-  const contractNo = await nextSerial(env, "contracts");
+  const sample = actorSample(user, quote);
+  return runWithSerialRetry(env, "contracts", sample, request, async (contractNo) => {
   const statements = [
     env.DB.prepare("UPDATE quotes SET status = 'accepted', event_id = ?, updated_at = ? WHERE id = ? AND status != 'accepted'").bind(eventId, now, id)
   ];
@@ -916,6 +1019,7 @@ async function acceptQuote(id, request, env, user) {
     return json({ error: "This quote could not be accepted. It may have just changed." }, 409, request);
   }
   return json({ ok: true, eventId, contractId, quote: await env.DB.prepare("SELECT * FROM quotes WHERE id = ?").bind(id).first() }, 200, request);
+  });
 }
 
 async function listContracts(env, request, user) {
@@ -934,6 +1038,8 @@ async function listContracts(env, request, user) {
 async function createContract(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const clientName = vStr(body && body.client_name, { label: "the client name", max: 120 });
   const total = vInt(body && body.total, { label: "the contract total", min: 0, max: 100000000 });
   const depositDue = vInt(body && body.deposit_due, { label: "the reservation amount", min: 0, max: 100000000, required: false });
@@ -943,20 +1049,24 @@ async function createContract(request, env, user) {
     if (field.error) return json({ error: field.error }, 400, request);
   }
   const id = randomId();
-  const number = await nextSerial(env, "contracts");
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO contracts (id, number, quote_id, event_id, client_id, client_name, event_date, venue, total, deposit_due, terms, status, created_at, created_by, is_sample, total_cents, deposit_due_cents)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
-    ).bind(id, number, body.quote_id || null, body.event_id || null, body.client_id || null, clientName.value, eventDate.value || null, body.venue || "", total.value, depositDue.value || Math.round((total.value || 0) * 0.5), body.terms || "", status.value, isoNow(), user.id, centsFromPesos(total.value), centsFromPesos(depositDue.value || Math.round((total.value || 0) * 0.5))),
-    auditStmt(env, user, "create", "contracts", id, number, request)
-  ]);
-  return json({ contract: await env.DB.prepare("SELECT * FROM contracts WHERE id = ?").bind(id).first() }, 201, request);
+  const sample = actorSample(user);
+  return runWithSerialRetry(env, "contracts", sample, request, async (number) => {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO contracts (id, number, quote_id, event_id, client_id, client_name, event_date, venue, total, deposit_due, terms, status, created_at, created_by, is_sample, total_cents, deposit_due_cents)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(id, number, body.quote_id || null, body.event_id || null, body.client_id || null, clientName.value, eventDate.value || null, body.venue || "", total.value, depositDue.value || Math.round((total.value || 0) * 0.5), body.terms || "", status.value, isoNow(), user.id, sample, centsFromPesos(total.value), centsFromPesos(depositDue.value || Math.round((total.value || 0) * 0.5))),
+      auditStmt(env, user, "create", "contracts", id, number, request, sample)
+    ]);
+    return json({ contract: await env.DB.prepare("SELECT * FROM contracts WHERE id = ?").bind(id).first() }, 201, request);
+  });
 }
 
 async function patchContract(id, request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const existing = await env.DB.prepare("SELECT * FROM contracts WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Contract not found." }, 404, request);
   const fields = { updated_at: isoNow() };
@@ -998,6 +1108,8 @@ async function listPayments(env, request, user) {
 async function createPayment(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const amount = vInt(body && body.amount, { label: "the amount", min: 1, max: 100000000 });
   const kind = vOneOf(String(body && body.kind || "downpayment"), PAYMENT_KINDS, "payment kind");
   const method = vOneOf(String(body && body.method || "cash"), PAYMENT_METHODS, "payment method");
@@ -1007,15 +1119,27 @@ async function createPayment(request, env, user) {
     if (field.error) return json({ error: field.error }, 400, request);
   }
   const id = randomId();
-  const receipt = body.receipt_no || body.or_number || await nextSerial(env, "payments");
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO payments (id, receipt_no, or_number, event_id, quote_id, contract_id, client_name, kind, amount, method, received_at, notes, created_at, created_by, is_sample, amount_cents)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
-    ).bind(id, receipt, receipt, body.event_id || null, body.quote_id || null, body.contract_id || null, body.client_name || "", kind.value, amount.value, method.value, received.value, notes.value, isoNow(), user.id, centsFromPesos(amount.value)),
-    auditStmt(env, user, "create", "payments", id, `${receipt} ${amount.value}`, request)
-  ]);
-  return json({ payment: await env.DB.prepare("SELECT * FROM payments WHERE id = ?").bind(id).first() }, 201, request);
+  const sample = actorSample(user);
+  const assigned = body.receipt_no || body.or_number;
+  const writePayment = async (receipt) => {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO payments (id, receipt_no, or_number, event_id, quote_id, contract_id, client_name, kind, amount, method, received_at, notes, created_at, created_by, is_sample, amount_cents)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(id, receipt, receipt, body.event_id || null, body.quote_id || null, body.contract_id || null, body.client_name || "", kind.value, amount.value, method.value, received.value, notes.value, isoNow(), user.id, sample, centsFromPesos(amount.value)),
+      auditStmt(env, user, "create", "payments", id, `${receipt} ${amount.value}`, request, sample)
+    ]);
+    return json({ payment: await env.DB.prepare("SELECT * FROM payments WHERE id = ?").bind(id).first() }, 201, request);
+  };
+  if (assigned) {
+    try {
+      return await writePayment(assigned);
+    } catch (err) {
+      if (isUniqueConstraintError(err)) return json({ error: "That document number is already in use. Please try again." }, 409, request);
+      throw err;
+    }
+  }
+  return runWithSerialRetry(env, "payments", sample, request, writePayment);
 }
 
 async function voidPayment(id, request, env, user) {
@@ -1197,14 +1321,62 @@ async function createHkTemplate(request, env, user) {
   const statements = [
     env.DB.prepare("INSERT INTO hk_templates (id, name, kind, area_id, is_sample, created_at) VALUES (?, ?, ?, ?, ?, ?)").bind(id, name.value, kind.value, body.area_id || null, sample, isoNow())
   ];
-  (body.items || []).forEach((label, index) => {
-    const text = typeof label === "string" ? label : label.label;
-    if (!text) return;
-    statements.push(env.DB.prepare("INSERT INTO hk_template_items (id, template_id, label, sort_order, is_sample) VALUES (?, ?, ?, ?, ?)").bind(randomId(), id, String(text).slice(0, 200), index, sample));
-  });
+  if (body.items != null && body.items !== "") {
+    const parsed = parseItemLabels(body.items);
+    if (parsed.error) return json({ error: parsed.error }, 400, request);
+    parsed.labels.forEach((text, index) => {
+      statements.push(env.DB.prepare("INSERT INTO hk_template_items (id, template_id, label, sort_order, is_sample) VALUES (?, ?, ?, ?, ?)").bind(randomId(), id, text, index, sample));
+    });
+  }
   statements.push(auditStmt(env, user, "create", "hk_templates", id, name.value, request, sample));
   await env.DB.batch(statements);
   return json({ template: await env.DB.prepare("SELECT * FROM hk_templates WHERE id = ?").bind(id).first() }, 201, request);
+}
+
+
+async function patchHkTemplate(id, request, env, user) {
+  if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
+  if (user.role === "staff") return deny(request);
+  const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
+  const existing = await env.DB.prepare("SELECT * FROM hk_templates WHERE id = ?").bind(id).first();
+  if (!existing) return json({ error: "Template not found." }, 404, request);
+  const fields = {};
+  if (body.name !== undefined) {
+    const name = vStr(body.name, { label: "the template name", max: 160 });
+    if (name.error) return json({ error: name.error }, 400, request);
+    fields.name = name.value;
+  }
+  if (body.kind !== undefined) {
+    const kind = vOneOf(String(body.kind), HK_KINDS, "job kind");
+    if (kind.error) return json({ error: kind.error }, 400, request);
+    fields.kind = kind.value;
+  }
+  if (body.area_id !== undefined) {
+    if (body.area_id) {
+      const area = await mustArea(env, body.area_id);
+      if (area.error) return json({ error: area.error }, 400, request);
+    }
+    fields.area_id = body.area_id || null;
+  }
+  const statements = [];
+  const keys = Object.keys(fields);
+  if (keys.length) {
+    statements.push(env.DB.prepare(`UPDATE hk_templates SET ${keys.map((k) => `${k} = ?`).join(", ")} WHERE id = ?`).bind(...keys.map((k) => fields[k]), id));
+  }
+  if (body.items !== undefined) {
+    const parsed = parseItemLabels(body.items);
+    if (parsed.error) return json({ error: parsed.error }, 400, request);
+    statements.push(env.DB.prepare("DELETE FROM hk_template_items WHERE template_id = ?").bind(id));
+    parsed.labels.forEach((text, index) => {
+      statements.push(env.DB.prepare("INSERT INTO hk_template_items (id, template_id, label, sort_order, is_sample) VALUES (?, ?, ?, ?, ?)").bind(randomId(), id, text, index, existing.is_sample || 0));
+    });
+  }
+  if (!statements.length) return json({ template: existing }, 200, request);
+  statements.push(auditStmt(env, user, "update", "hk_templates", id, JSON.stringify(fields), request, existing.is_sample));
+  await env.DB.batch(statements);
+  return json({ template: await env.DB.prepare("SELECT * FROM hk_templates WHERE id = ?").bind(id).first() }, 200, request);
 }
 
 async function listHkJobs(env, request, user) {
@@ -1273,17 +1445,24 @@ async function createHkJob(request, env, user) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(id, body.event_id || null, body.area_id || null, kind.value, title.value, body.assigned_to || null, due.value || null, status.value, notes.value || "", isoNow(), user.id, sample)
   ];
-  let labels = Array.isArray(body.items) ? body.items : [];
+  let labels;
+  if (body.items != null && body.items !== "") {
+    const parsed = parseItemLabels(body.items);
+    if (parsed.error) return json({ error: parsed.error }, 400, request);
+    labels = parsed.labels;
+  } else {
+    labels = [];
+  }
   if (body.template_id && !labels.length) {
     const tmpl = await listBy(env, request, "SELECT label, sort_order FROM hk_template_items WHERE template_id = ? ORDER BY sort_order", [body.template_id]);
     labels = tmpl.map((row) => row.label);
   }
-  labels.forEach((label, index) => {
-    const text = typeof label === "string" ? label : label.label;
+  if (labels.length > 100) return json({ error: "Please keep the checklist to 100 items or fewer." }, 400, request);
+  labels.forEach((text, index) => {
     if (!text) return;
-    statements.push(env.DB.prepare("INSERT INTO checklist_items (id, checklist_id, label, done, notes, sort_order, is_sample) VALUES (?, ?, ?, 0, '', ?, 0)").bind(randomId(), id, String(text).slice(0, 200), index));
+    statements.push(env.DB.prepare("INSERT INTO checklist_items (id, checklist_id, label, done, notes, sort_order, is_sample) VALUES (?, ?, ?, 0, '', ?, ?)").bind(randomId(), id, String(text).slice(0, 200), index, sample));
   });
-  statements.push(auditStmt(env, user, "create", "checklists", id, title.value, request));
+  statements.push(auditStmt(env, user, "create", "checklists", id, title.value, request, sample));
   await env.DB.batch(statements);
   return json({ job: await env.DB.prepare("SELECT * FROM checklists WHERE id = ?").bind(id).first() }, 201, request);
 }
@@ -1338,11 +1517,15 @@ async function patchHkItem(id, request, env, user) {
   const item = await env.DB.prepare("SELECT * FROM checklist_items WHERE id = ?").bind(id).first();
   if (!item) return json({ error: "Item not found." }, 404, request);
   const job = await env.DB.prepare("SELECT * FROM checklists WHERE id = ?").bind(item.checklist_id).first();
-  if (user.role === "staff" && job && job.assigned_to !== user.id) return deny(request);
+  if (!job) {
+    if (user.role === "staff") return deny(request);
+  } else if (user.role === "staff" && job.assigned_to !== user.id) {
+    return deny(request);
+  }
   const body = await readJson(request);
   const missing = requireBody(body, request);
   if (missing) return missing;
-  const done = body.done ? 1 : 0;
+  const done = body.done !== undefined ? (body.done ? 1 : 0) : item.done;
   const notesField = body.notes !== undefined ? vStr(body.notes, { label: "notes", required: false, max: 2000 }) : { value: item.notes };
   if (notesField.error) return json({ error: notesField.error }, 400, request);
   const notes = notesField.value;
@@ -1372,17 +1555,20 @@ async function listTickets(env, request) {
 async function createTicket(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const title = vStr(body && body.title, { label: "the issue title", max: 160 });
   const detail = vStr(body && body.detail, { label: "the details", required: false, max: 4000 });
   const priority = vOneOf(String(body && body.priority || "normal"), TICKET_PRIORITIES, "priority");
   if (title.error || detail.error || priority.error) return json({ error: title.error || detail.error || priority.error }, 400, request);
   const id = randomId();
+  const sample = actorSample(user);
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO issues (id, area_id, event_id, title, detail, status, priority, reported_by, assigned_to, created_at, is_sample)
-       VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, 0)`
-    ).bind(id, body.area_id || null, body.event_id || null, title.value, detail.value, priority.value, user.id, body.assigned_to || null, isoNow()),
-    auditStmt(env, user, "create", "issues", id, title.value, request)
+       VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`
+    ).bind(id, body.area_id || null, body.event_id || null, title.value, detail.value, priority.value, user.id, body.assigned_to || null, isoNow(), sample),
+    auditStmt(env, user, "create", "issues", id, title.value, request, sample)
   ]);
   return json({ ticket: await env.DB.prepare("SELECT * FROM issues WHERE id = ?").bind(id).first() }, 201, request);
 }
@@ -1563,12 +1749,12 @@ async function listMoves(env, request) {
 async function createMove(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const kind = vOneOf(String(body && body.kind || ""), MOVE_KINDS, "movement type");
   const qty = vInt(body && body.qty, { label: "the quantity", min: kind && kind.value === "adjust" ? -1000000 : 1, max: 1000000 });
   if (kind.error || qty.error) return json({ error: kind.error || qty.error }, 400, request);
   if (user.role === "staff" && !["issue", "return"].includes(kind.value)) return deny(request);
-  const missing = requireBody(body, request);
-  if (missing) return missing;
   const item = await env.DB.prepare("SELECT * FROM inventory_items WHERE id = ?").bind(body.item_id).first();
   if (!item) return json({ error: "Item not found." }, 400, request);
   if (body.event_id) {
@@ -1614,6 +1800,8 @@ async function createAllocation(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   if (user.role === "staff") return deny(request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const qty = vInt(body && body.qty, { label: "the quantity", min: 1, max: 100000 });
   if (qty.error) return json({ error: qty.error }, 400, request);
   if (!body.event_id || !body.item_id) return json({ error: "Please pick an event and an item." }, 400, request);
@@ -1625,9 +1813,9 @@ async function createAllocation(request, env, user) {
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO event_item_allocations (id, event_id, item_id, qty, returned_qty, damaged_qty, notes, is_sample, created_at, created_by)
-       VALUES (?, ?, ?, ?, 0, 0, ?, 0, ?, ?)`
-    ).bind(id, body.event_id, body.item_id, qty.value, body.notes || "", isoNow(), user.id),
-    auditStmt(env, user, "create", "event_item_allocations", id, `${body.event_id} ${qty.value}`, request)
+       VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, ?)`
+    ).bind(id, body.event_id, body.item_id, qty.value, body.notes || "", actorSample(user, ev.row || ev), isoNow(), user.id),
+    auditStmt(env, user, "create", "event_item_allocations", id, `${body.event_id} ${qty.value}`, request, actorSample(user, ev.row || ev))
   ]);
   return json({ allocation: await env.DB.prepare("SELECT * FROM event_item_allocations WHERE id = ?").bind(id).first() }, 201, request);
 }
@@ -1640,12 +1828,14 @@ async function createSupplier(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   if (user.role === "staff") return deny(request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const name = vStr(body && body.name, { label: "the supplier name", max: 160 });
   if (name.error) return json({ error: name.error }, 400, request);
   const id = randomId();
   await env.DB.batch([
-    env.DB.prepare("INSERT INTO suppliers (id, name, contact, category, notes, is_sample, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)").bind(id, name.value, body.contact || "", body.category || "", body.notes || "", isoNow()),
-    auditStmt(env, user, "create", "suppliers", id, name.value, request)
+    env.DB.prepare("INSERT INTO suppliers (id, name, contact, category, notes, is_sample, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(id, name.value, body.contact || "", body.category || "", body.notes || "", actorSample(user), isoNow()),
+    auditStmt(env, user, "create", "suppliers", id, name.value, request, actorSample(user))
   ]);
   return json({ supplier: await env.DB.prepare("SELECT * FROM suppliers WHERE id = ?").bind(id).first() }, 201, request);
 }
@@ -1675,7 +1865,7 @@ async function patchSupplier(id, request, env, user) {
   return json({ supplier: await env.DB.prepare("SELECT * FROM suppliers WHERE id = ?").bind(id).first() }, 200, request);
 }
 
-async function listPOs(env, request) {
+async function listPOs(env, request, user) {
   const rows = await listBy(env, request, `SELECT p.*, s.name AS supplier_name FROM purchase_orders p LEFT JOIN suppliers s ON s.id = p.supplier_id ORDER BY p.created_at DESC LIMIT 200`);
   const ids = rows.map((row) => row.id);
   let lines = [];
@@ -1685,34 +1875,51 @@ async function listPOs(env, request) {
     if (!by[line.po_id]) by[line.po_id] = [];
     by[line.po_id].push(line);
   }
-  return json({ orders: rows.map((row) => ({ ...row, lines: by[row.id] || [] })), statuses: PO_STATUSES }, 200, request);
+  const poMoney = ["total", "total_cents"];
+  const lineMoney = ["unit_cost", "amount", "unit_cost_cents", "amount_cents"];
+  const orders = rows.map((row) => ({ ...row, lines: by[row.id] || [] }));
+  const visible = isOwner(user)
+    ? orders
+    : orders.map((row) => ({
+        ...stripMoneyFields(row, poMoney),
+        lines: (row.lines || []).map((line) => stripMoneyFields(line, lineMoney))
+      }));
+  return json({ orders: visible, statuses: PO_STATUSES }, 200, request);
 }
 
 async function createPO(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   if (user.role === "staff") return deny(request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const lines = Array.isArray(body.lines) ? body.lines : [];
   if (!lines.length) return json({ error: "Please add at least one line." }, 400, request);
-  const total = lines.reduce((sum, line) => sum + (Number(line.qty) || 0) * (Number(line.unit_cost) || 0), 0);
+  const hasMoney = body.total !== undefined && body.total !== null && body.total !== ""
+    || lines.some((line) => line && (line.unit_cost !== undefined && line.unit_cost !== null && line.unit_cost !== "" || line.amount !== undefined && line.amount !== null && line.amount !== ""));
+  if (hasMoney && !isOwner(user)) return denyMoney(request);
+  const total = isOwner(user) ? lines.reduce((sum, line) => sum + (Number(line.qty) || 0) * (Number(line.unit_cost) || 0), 0) : 0;
   const id = randomId();
-  const number = await nextSerial(env, "pos");
-  const statements = [
-    env.DB.prepare(
-      `INSERT INTO purchase_orders (id, number, supplier_id, status, ordered_at, expected_at, total, notes, created_at, created_by, is_sample, total_cents)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
-    ).bind(id, number, body.supplier_id || null, body.status && PO_STATUSES.includes(body.status) ? body.status : "draft", body.ordered_at || todayISO(), body.expected_at || null, total, body.notes || "", isoNow(), user.id, centsFromPesos(total))
-  ];
-  lines.forEach((line) => {
-    const qty = Number(line.qty) || 1;
-    const cost = Number(line.unit_cost) || 0;
-    statements.push(env.DB.prepare(
-      `INSERT INTO po_lines (id, po_id, item_id, label, qty, unit_cost, amount, is_sample, unit_cost_cents, amount_cents) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
-    ).bind(randomId(), id, line.item_id || null, String(line.label || "Item").slice(0, 200), qty, cost, qty * cost, centsFromPesos(cost), centsFromPesos(qty * cost)));
+  const sample = actorSample(user);
+  return runWithSerialRetry(env, "pos", sample, request, async (number) => {
+    const statements = [
+      env.DB.prepare(
+        `INSERT INTO purchase_orders (id, number, supplier_id, status, ordered_at, expected_at, total, notes, created_at, created_by, is_sample, total_cents)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(id, number, body.supplier_id || null, body.status && PO_STATUSES.includes(body.status) ? body.status : "draft", body.ordered_at || todayISO(), body.expected_at || null, total, body.notes || "", isoNow(), user.id, sample, centsFromPesos(total))
+    ];
+    lines.forEach((line) => {
+      const qty = Number(line.qty) || 1;
+      const cost = isOwner(user) ? (Number(line.unit_cost) || 0) : 0;
+      statements.push(env.DB.prepare(
+        `INSERT INTO po_lines (id, po_id, item_id, label, qty, unit_cost, amount, is_sample, unit_cost_cents, amount_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(randomId(), id, line.item_id || null, String(line.label || "Item").slice(0, 200), qty, cost, qty * cost, sample, centsFromPesos(cost), centsFromPesos(qty * cost)));
+    });
+    statements.push(auditStmt(env, user, "create", "purchase_orders", id, number, request, sample));
+    await env.DB.batch(statements);
+    const order = await env.DB.prepare("SELECT * FROM purchase_orders WHERE id = ?").bind(id).first();
+    return json({ order: isOwner(user) ? order : stripMoneyFields(order, ["total", "total_cents"]) }, 201, request);
   });
-  statements.push(auditStmt(env, user, "create", "purchase_orders", id, number, request));
-  await env.DB.batch(statements);
-  return json({ order: await env.DB.prepare("SELECT * FROM purchase_orders WHERE id = ?").bind(id).first() }, 201, request);
 }
 
 async function patchPO(id, request, env, user) {
@@ -1721,6 +1928,8 @@ async function patchPO(id, request, env, user) {
   const existing = await env.DB.prepare("SELECT * FROM purchase_orders WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Purchase order not found." }, 404, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const status = body.status ? vOneOf(String(body.status), PO_STATUSES, "status") : { value: existing.status };
   if (status.error) return json({ error: status.error }, 400, request);
   const statements = [
@@ -1734,8 +1943,8 @@ async function patchPO(id, request, env, user) {
       const qty = Number(line.qty) || 0;
       statements.push(env.DB.prepare(
         `INSERT INTO inventory_moves (id, item_id, kind, qty, signed_qty, event_id, notes, created_at, created_by, is_sample)
-         VALUES (?, ?, 'receive', ?, ?, NULL, ?, ?, ?, 0)`
-      ).bind(randomId(), item.id, qty, qty, `PO ${existing.number}`, isoNow(), user.id));
+         VALUES (?, ?, 'receive', ?, ?, NULL, ?, ?, ?, ?)`
+      ).bind(randomId(), item.id, qty, qty, `PO ${existing.number}`, isoNow(), user.id, actorSample(user, existing)));
       statements.push(env.DB.prepare("UPDATE inventory_items SET qty_on_hand = qty_on_hand + ?, updated_at = ? WHERE id = ?").bind(qty, isoNow(), item.id));
     }
   }
@@ -1776,6 +1985,8 @@ async function listExpenses(env, request) {
 async function createExpense(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const date = vDate(body && body.date || todayISO(), { label: "the date" });
   const category = vOneOf(String(body && body.category || "other"), EXPENSE_CATEGORIES, "category");
   const amount = vInt(body && body.amount, { label: "the amount", min: 1, max: 100000000 });
@@ -1786,12 +1997,13 @@ async function createExpense(request, env, user) {
     if (field.error) return json({ error: field.error }, 400, request);
   }
   const id = randomId();
+  const sample = actorSample(user);
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO expenses (id, date, category, payee, amount, method, event_id, notes, created_at, created_by, is_sample, account_id, vat, receipt_no, supplier_id, amount_cents, vat_cents)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`
-    ).bind(id, date.value, category.value, payee.value, amount.value, body.method || "cash", body.event_id || null, notes.value, isoNow(), user.id, body.account_id || null, vat.value || 0, body.receipt_no || "", body.supplier_id || null, centsFromPesos(amount.value), centsFromPesos(vat.value || 0)),
-    auditStmt(env, user, "create", "expenses", id, `${category.value} ${amount.value}`, request)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, date.value, category.value, payee.value, amount.value, body.method || "cash", body.event_id || null, notes.value, isoNow(), user.id, sample, body.account_id || null, vat.value || 0, body.receipt_no || "", body.supplier_id || null, centsFromPesos(amount.value), centsFromPesos(vat.value || 0)),
+    auditStmt(env, user, "create", "expenses", id, `${category.value} ${amount.value}`, request, sample)
   ]);
   return json({ expense: await env.DB.prepare("SELECT * FROM expenses WHERE id = ?").bind(id).first() }, 201, request);
 }
@@ -1822,6 +2034,8 @@ async function listPetty(env, request) {
 async function createPetty(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const date = vDate(body && body.date || todayISO(), { label: "the date" });
   const kind = vOneOf(String(body && body.kind || "out"), ["in", "out"], "type");
   const amount = vInt(body && body.amount, { label: "the amount", min: 1, max: 10000000 });
@@ -1830,12 +2044,13 @@ async function createPetty(request, env, user) {
     if (field.error) return json({ error: field.error }, 400, request);
   }
   const id = randomId();
+  const sample = actorSample(user);
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO petty_cash (id, date, kind, amount, reason, expense_id, created_at, created_by, is_sample, method, amount_cents)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
-    ).bind(id, date.value, kind.value, amount.value, reason.value, body.expense_id || null, isoNow(), user.id, body.method || "cash", centsFromPesos(amount.value)),
-    auditStmt(env, user, "create", "petty_cash", id, `${kind.value} ${amount.value}`, request)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(id, date.value, kind.value, amount.value, reason.value, body.expense_id || null, isoNow(), user.id, sample, body.method || "cash", centsFromPesos(amount.value)),
+    auditStmt(env, user, "create", "petty_cash", id, `${kind.value} ${amount.value}`, request, sample)
   ]);
   return json({ entry: await env.DB.prepare("SELECT * FROM petty_cash WHERE id = ?").bind(id).first() }, 201, request);
 }
@@ -2039,18 +2254,39 @@ async function createPayrollPeriod(request, env, user) {
   if (start.error || end.error) return json({ error: start.error || end.error }, 400, request);
   if (end.value < start.value) return json({ error: "The end date cannot be before the start date." }, 400, request);
   const sample = actorSample(user);
-  const profiles = await listBy(env, request, `SELECT u.id, u.is_sample, p.daily_rate, p.rate FROM users u LEFT JOIN staff_profiles p ON p.user_id = u.id WHERE u.role != 'owner' AND IFNULL(u.is_active,1)=1 AND IFNULL(u.is_sample,0) = ?`, [sample]);
-  const attendance = await listBy(env, request, "SELECT staff_id, date FROM attendance WHERE date >= ? AND date <= ? AND time_in IS NOT NULL", [start.value, end.value]);
-  const openAdvances = await listBy(env, request, "SELECT id, user_id, amount, date FROM cash_advances WHERE status = 'open' AND date <= ? AND IFNULL(is_sample,0) = ? ORDER BY date, id", [end.value, sample]);
+  const overlap = await env.DB.prepare(
+    `SELECT id FROM payroll_periods
+     WHERE IFNULL(is_sample,0) = ?
+       AND status NOT IN ('void', 'cancelled')
+       AND start_date <= ? AND end_date >= ?`
+  ).bind(sample, end.value, start.value).first();
+  if (overlap) return json({ error: "This payroll period overlaps an existing one." }, 409, request);
+  const profiles = await listBy(env, request, `SELECT u.id, u.is_sample, p.daily_rate, p.rate, p.rate_type, p.hourly_rate FROM users u LEFT JOIN staff_profiles p ON p.user_id = u.id WHERE u.role != 'owner' AND IFNULL(u.is_active,1)=1 AND IFNULL(u.is_sample,0) = ?`, [sample]);
+  const attendance = await listBy(env, request, "SELECT staff_id, date, time_in, time_out FROM attendance WHERE date >= ? AND date <= ? AND time_in IS NOT NULL", [start.value, end.value]);
+  const reservedRows = await listBy(env, request,
+    `SELECT l.advance_ids FROM payroll_lines l JOIN payroll_periods p ON p.id = l.period_id
+     WHERE p.status IN ('draft', 'reviewed') AND IFNULL(p.is_sample,0) = ?`,
+    [sample]
+  );
+  const reservedIds = new Set();
+  for (const row of reservedRows) {
+    for (const part of String(row.advance_ids || "").split(",")) {
+      if (part.trim()) reservedIds.add(part.trim());
+    }
+  }
+  const openAdvances = (await listBy(env, request, "SELECT id, user_id, amount, date FROM cash_advances WHERE status = 'open' AND date <= ? AND IFNULL(is_sample,0) = ? ORDER BY date, id", [end.value, sample]))
+    .filter((row) => !reservedIds.has(row.id));
   const advByUser = {};
   for (const row of openAdvances) {
     if (!advByUser[row.user_id]) advByUser[row.user_id] = [];
     advByUser[row.user_id].push(row);
   }
   const daysMap = {};
+  const hoursMap = {};
   for (const row of attendance) {
     if (!daysMap[row.staff_id]) daysMap[row.staff_id] = new Set();
     daysMap[row.staff_id].add(row.date);
+    hoursMap[row.staff_id] = (hoursMap[row.staff_id] || 0) + hoursBetween(row.time_in, row.time_out);
   }
   const id = randomId();
   const statements = [
@@ -2061,8 +2297,11 @@ async function createPayrollPeriod(request, env, user) {
   ];
   for (const person of profiles) {
     const daysWorked = daysMap[person.id] ? daysMap[person.id].size : 0;
-    const daily = person.daily_rate || person.rate || 0;
-    const gross = Math.round(daysWorked * daily);
+    const hoursWorked = Math.round((hoursMap[person.id] || 0) * 100) / 100;
+    const isHourly = String(person.rate_type || "").toLowerCase() === "hourly";
+    const hourly = Number(person.hourly_rate || (isHourly ? person.rate : 0) || 0);
+    const daily = Number(person.daily_rate || (!isHourly ? person.rate : 0) || 0);
+    const gross = Math.round(isHourly ? hoursWorked * hourly : daysWorked * daily);
     const sss = Math.round(gross * 0.045);
     const philhealth = Math.round(gross * 0.025);
     const pagibig = Math.min(100, Math.round(gross * 0.02));
@@ -2072,8 +2311,8 @@ async function createPayrollPeriod(request, env, user) {
     const net = Math.max(afterGovt - applied, 0);
     statements.push(env.DB.prepare(
       `INSERT INTO payroll_lines (id, period_id, user_id, days_worked, hours_worked, gross, sss, philhealth, pagibig, wtax, advances, other_deductions, net, notes, is_sample, gross_cents, sss_cents, philhealth_cents, pagibig_cents, wtax_cents, advances_cents, net_cents, advance_ids, contributions_estimated)
-       VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, 0, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
-    ).bind(randomId(), id, person.id, daysWorked, gross, sss, philhealth, pagibig, wtax, applied, net, person.is_sample || 0, centsFromPesos(gross), centsFromPesos(sss), centsFromPesos(philhealth), centsFromPesos(pagibig), centsFromPesos(wtax), centsFromPesos(applied), centsFromPesos(net), appliedIds.join(",") || null));
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+    ).bind(randomId(), id, person.id, daysWorked, hoursWorked, gross, sss, philhealth, pagibig, wtax, applied, net, person.is_sample || 0, centsFromPesos(gross), centsFromPesos(sss), centsFromPesos(philhealth), centsFromPesos(pagibig), centsFromPesos(wtax), centsFromPesos(applied), centsFromPesos(net), appliedIds.join(",") || null));
   }
   statements.push(auditStmt(env, user, "create", "payroll_periods", id, `${start.value} ${end.value}`, request, sample));
   await env.DB.batch(statements);
@@ -2117,18 +2356,23 @@ async function listAdvances(env, request) {
 async function createAdvance(request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const amount = vInt(body && body.amount, { label: "the amount", min: 1, max: 1000000 });
   const date = vDate(body && body.date || todayISO(), { label: "the date" });
   const reason = vStr(body && body.reason, { label: "the reason", required: false, max: 400 });
   if (amount.error || date.error || reason.error) return json({ error: amount.error || date.error || reason.error }, 400, request);
   if (!body.user_id) return json({ error: "Please pick a staff member." }, 400, request);
+  const person = await mustActiveStaff(env, body.user_id);
+  if (person.error) return json({ error: person.error }, 400, request);
   const id = randomId();
+  const sample = actorSample(user, person.row);
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO cash_advances (id, user_id, date, amount, reason, status, created_at, created_by, is_sample, amount_cents)
-       VALUES (?, ?, ?, ?, ?, 'open', ?, ?, 0, ?)`
-    ).bind(id, body.user_id, date.value, amount.value, reason.value, isoNow(), user.id, centsFromPesos(amount.value)),
-    auditStmt(env, user, "create", "cash_advances", id, String(amount.value), request)
+       VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`
+    ).bind(id, body.user_id, date.value, amount.value, reason.value, isoNow(), user.id, sample, centsFromPesos(amount.value)),
+    auditStmt(env, user, "create", "cash_advances", id, String(amount.value), request, sample)
   ]);
   return json({ advance: await env.DB.prepare("SELECT * FROM cash_advances WHERE id = ?").bind(id).first() }, 201, request);
 }
@@ -2138,6 +2382,8 @@ async function patchAdvance(id, request, env, user) {
   const existing = await env.DB.prepare("SELECT * FROM cash_advances WHERE id = ?").bind(id).first();
   if (!existing) return json({ error: "Advance not found." }, 404, request);
   const body = await readJson(request);
+  const missing = requireBody(body, request);
+  if (missing) return missing;
   const status = vOneOf(String(body.status || existing.status), ADVANCE_STATUSES, "status");
   if (status.error) return json({ error: status.error }, 400, request);
   await env.DB.batch([

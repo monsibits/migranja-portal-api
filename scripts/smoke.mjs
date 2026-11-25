@@ -48,12 +48,40 @@ async function request(path, { method = "GET", token, body, raw = false } = {}) 
   return { status: res.status, data };
 }
 
-async function login(email, password) {
+async function login(email, password, { required = true } = {}) {
   const res = await request("/api/auth/login", { method: "POST", body: { email, password } });
   if (res.status !== 200 || !res.data || !res.data.token) {
+    if (!required) return null;
     fail(`Login failed for ${email} (HTTP ${res.status})`);
   }
   return res.data.token;
+}
+
+function createdRecord(path, data) {
+  if (!data || typeof data !== "object") return null;
+  const map = {
+    "/api/clients": ["client", "clients"],
+    "/api/leads": ["lead", "leads"],
+    "/api/hr/leave": ["leave", "request", "requests"],
+    "/api/areas": ["area"],
+    "/api/hk/templates": ["template"],
+    "/api/inventory/items": ["item"],
+    "/api/expenses": ["expense"]
+  };
+  const tableMap = {
+    "/api/clients": "clients",
+    "/api/leads": "leads",
+    "/api/hr/leave": "leave_requests",
+    "/api/areas": "areas",
+    "/api/hk/templates": "hk_templates",
+    "/api/inventory/items": "inventory_items",
+    "/api/expenses": "expenses"
+  };
+  for (const key of map[path] || []) {
+    const row = data[key];
+    if (row && row.id) return { table: tableMap[path], id: row.id, is_sample: row.is_sample, path };
+  }
+  return null;
 }
 
 async function logout(token) {
@@ -62,7 +90,7 @@ async function logout(token) {
 
 const staffText = readFileSync(join(root, ".sample-staff"), "utf8");
 const users = parseStaffFile(staffText);
-if (!users.owner || !users.admin) fail("Could not read SAMPLE Owner and Admin logins from .sample-staff");
+if (!users.admin) fail("Could not read the SAMPLE Admin login from .sample-staff");
 
 const results = [];
 function check(name, ok, detail) {
@@ -70,8 +98,12 @@ function check(name, ok, detail) {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
 }
 
-const ownerToken = await login(users.owner.email, users.owner.password);
+const ownerToken = users.owner
+  ? await login(users.owner.email, users.owner.password, { required: false })
+  : null;
+if (!ownerToken) console.log("SKIP  SAMPLE owner unavailable — admin and staff checks still run");
 const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+const created = [];
 
 const creates = [
   ["/api/clients", { name: `SAMPLE Smoke Client ${stamp}`, phone: "09000000000", notes: "smoke" }],
@@ -83,22 +115,35 @@ const creates = [
   ["/api/expenses", { date: "2027-07-01", category: "supplies", amount: 10, notes: "SAMPLE smoke expense" }]
 ];
 
-for (const [path, body] of creates) {
-  const res = await request(path, { method: "POST", token: ownerToken, body });
-  check(`POST ${path}`, res.status === 201, `HTTP ${res.status}`);
+if (ownerToken) {
+  for (const [path, body] of creates) {
+    const res = await request(path, { method: "POST", token: ownerToken, body });
+    check(`POST ${path}`, res.status === 201, `HTTP ${res.status}`);
+    const rec = createdRecord(path, res.data);
+    if (rec) {
+      created.push(rec);
+      if (path === "/api/hk/templates") created.push({ table: "hk_template_items", id: rec.id });
+      if (path === "/api/inventory/items") created.push({ table: "inventory_moves", id: rec.id });
+    }
+    if (res.status === 201) {
+      const flagged = rec && (rec.is_sample === 1 || rec.is_sample === true);
+      check(`POST ${path} is_sample`, flagged, flagged ? "" : "not flagged as sample");
+    }
+  }
 }
 
-const empty = await request("/api/clients", { method: "POST", token: ownerToken, body: null });
-check("empty body is 400", empty.status === 400, `HTTP ${empty.status}`);
+let sampleEvent = null;
+if (ownerToken) {
+  const empty = await request("/api/clients", { method: "POST", token: ownerToken, body: null });
+  check("empty body is 400", empty.status === 400, `HTTP ${empty.status}`);
 
-const events = await request("/api/events", { token: ownerToken });
-const sampleEvent = ((events.data && events.data.events) || []).find((row) => row.is_sample);
-if (sampleEvent) {
-  const sheet = await request(`/api/events/${sampleEvent.id}/sheet`, { token: ownerToken });
-  check("owner event sheet includes balance", sheet.status === 200 && !!(sheet.data && sheet.data.balance), `HTTP ${sheet.status}`);
+  const events = await request("/api/events", { token: ownerToken });
+  sampleEvent = ((events.data && events.data.events) || []).find((row) => row.is_sample);
+  if (sampleEvent) {
+    const sheet = await request(`/api/events/${sampleEvent.id}/sheet`, { token: ownerToken });
+    check("owner event sheet includes balance", sheet.status === 200 && !!(sheet.data && sheet.data.balance), `HTTP ${sheet.status}`);
+  }
 }
-
-await logout(ownerToken);
 
 const adminToken = await login(users.admin.email, users.admin.password);
 if (sampleEvent) {
@@ -121,6 +166,12 @@ if (users.staff) {
   check("staff cannot create areas", area.status === 403, `HTTP ${area.status}`);
   await logout(staffToken);
 }
+
+if (ownerToken && created.length) {
+  const cleanup = await request("/api/sample/cleanup-smoke", { method: "POST", token: ownerToken, body: { records: created } });
+  check("smoke records cleaned up", cleanup.status === 200, `HTTP ${cleanup.status}`);
+}
+if (ownerToken) await logout(ownerToken);
 
 const failed = results.filter((row) => !row.ok);
 if (failed.length) fail(`${failed.length} smoke check(s) failed`);

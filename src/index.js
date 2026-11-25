@@ -519,6 +519,14 @@ async function handle(request, env, url, requestId) {
     if (user.role !== "owner") return deny(request);
     return removeSample(request, env, user);
   }
+  if (url.pathname === "/api/sample" && request.method === "DELETE") {
+    if (user.role !== "owner") return deny(request);
+    return removeSample(request, env, user);
+  }
+  if (url.pathname === "/api/sample/cleanup-smoke" && request.method === "POST") {
+    if (user.role !== "owner") return deny(request);
+    return cleanupSmoke(request, env, user);
+  }
   if (url.pathname === "/api/audit" && request.method === "GET") {
     if (!allow(user, "audit", "read")) return deny(request);
     return listAudit(env, request);
@@ -788,6 +796,116 @@ function toCsv(rows, columns) {
   const header = columns.map((col) => csvEscape(col.label)).join(",");
   const lines = (rows || []).map((row) => columns.map((col) => csvEscape(row[col.key])).join(","));
   return `\uFEFF${header}\n${lines.join("\n")}\n`;
+}
+
+
+function crc32Bytes(bytes) {
+  let crc = 0xFFFFFFFF;
+  for (const b of bytes) {
+    crc ^= b;
+    for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (0xEDB88320 & -(crc & 1));
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function u16le(n) {
+  const b = new Uint8Array(2);
+  new DataView(b.buffer).setUint16(0, n, true);
+  return b;
+}
+
+function u32le(n) {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setUint32(0, n, true);
+  return b;
+}
+
+function concatBytes(parts) {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+function zipStore(files) {
+  const encoder = new TextEncoder();
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  for (const file of files) {
+    const name = encoder.encode(file.name);
+    const data = file.data instanceof Uint8Array ? file.data : encoder.encode(String(file.data || ""));
+    const crc = crc32Bytes(data);
+    const local = concatBytes([
+      u32le(0x04034b50), u16le(20), u16le(0), u16le(0), u16le(0), u16le(0),
+      u32le(crc), u32le(data.length), u32le(data.length), u16le(name.length), u16le(0),
+      name, data
+    ]);
+    const central = concatBytes([
+      u32le(0x02014b50), u16le(20), u16le(20), u16le(0), u16le(0), u16le(0), u16le(0),
+      u32le(crc), u32le(data.length), u32le(data.length), u16le(name.length), u16le(0), u16le(0),
+      u16le(0), u16le(0), u32le(0), u32le(offset), name
+    ]);
+    locals.push(local);
+    centrals.push(central);
+    offset += local.length;
+  }
+  const localAll = concatBytes(locals);
+  const centralAll = concatBytes(centrals);
+  const end = concatBytes([
+    u32le(0x06054b50), u16le(0), u16le(0), u16le(files.length), u16le(files.length),
+    u32le(centralAll.length), u32le(localAll.length), u16le(0)
+  ]);
+  return concatBytes([localAll, centralAll, end]);
+}
+
+function xlsxEscape(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function toXlsx(rows, columns, sheetName) {
+  const safeName = String(sheetName || "Sheet1").replace(/[\\/*?:\[\]]/g, " ").slice(0, 31) || "Sheet1";
+  const cellXml = (rowIndex, colIndex, raw, col) => {
+    const ref = `${String.fromCharCode(65 + (colIndex % 26))}${rowIndex}`;
+    if (isPlainNumber(raw) || (col && col.type === "number" && raw !== null && raw !== undefined && raw !== "")) {
+      const n = Number(raw);
+      if (Number.isFinite(n)) return `<c r="${ref}" t="n"><v>${n}</v></c>`;
+    }
+    let text = String(raw ?? "");
+    if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+    return `<c r="${ref}" t="inlineStr"><is><t>${xlsxEscape(text)}</t></is></c>`;
+  };
+  const header = `<row r="1">${columns.map((col, i) => cellXml(1, i, col.label)).join("")}</row>`;
+  const body = (rows || []).map((row, r) => {
+    const rowIndex = r + 2;
+    return `<row r="${rowIndex}">${columns.map((col, i) => cellXml(rowIndex, i, row[col.key], col)).join("")}</row>`;
+  }).join("");
+  const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${header}${body}</sheetData></worksheet>`;
+  const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${xlsxEscape(safeName)}" sheetId="1" r:id="rId1"/></sheets></workbook>`;
+  const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`;
+  const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
+  const types = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`;
+  const encoder = new TextEncoder();
+  return zipStore([
+    { name: "[Content_Types].xml", data: encoder.encode(types) },
+    { name: "_rels/.rels", data: encoder.encode(rels) },
+    { name: "xl/workbook.xml", data: encoder.encode(workbook) },
+    { name: "xl/_rels/workbook.xml.rels", data: encoder.encode(workbookRels) },
+    { name: "xl/worksheets/sheet1.xml", data: encoder.encode(sheet) }
+  ]);
 }
 
 function toExcelXml(rows, columns, sheetName) {
@@ -1231,7 +1349,7 @@ async function changePassword(request, env, user) {
 
 function eventColumns(role) {
   const base = "e.id, e.date, e.client, e.title, e.type, e.package, e.pax, e.venue, e.status, e.from_request, e.created_at, e.created_by, e.is_sample";
-  if (role === "owner") return `${base}, e.fee, e.deposit`;
+  if (role === "owner") return `${base}, e.fee, e.deposit, e.contract_total`;
   return base;
 }
 
@@ -1429,7 +1547,11 @@ async function decideRequest(id, request, env, user) {
       ]);
       const inserted = results[0] && results[0].meta && results[0].meta.changes;
       if (inserted !== 1) return json({ error: "This request is no longer pending." }, 409, request);
-      await audit(env, user, "approve", "requests", id, `Created event ${eventId}`, request, req.is_sample);
+      try {
+        await audit(env, user, "approve", "requests", id, `Created event ${eventId}`, request, req.is_sample);
+      } catch (err) {
+        console.error(JSON.stringify({ level: "error", message: "approve_audit_failed", error: String(err && err.message ? err.message : err) }));
+      }
     } catch (err) {
       const message = String(err && err.message ? err.message : err);
       if (/UNIQUE constraint failed/i.test(message)) {
@@ -1911,6 +2033,45 @@ async function revokeUserSessions(id, request, env, actor) {
   return json({ ok: true }, 200, request);
 }
 
+
+async function cleanupSmoke(request, env, user) {
+  if (!originAllowed(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
+  if (!user || !user.is_sample) return json({ error: "Only a sample owner can clean up smoke records." }, 403, request);
+  const body = await readJson(request);
+  if (!body || !Array.isArray(body.records)) return json({ error: "Please send the smoke records to remove." }, 400, request);
+  const tables = {
+    clients: "clients",
+    leads: "leads",
+    leave_requests: "leave_requests",
+    areas: "areas",
+    hk_templates: "hk_templates",
+    hk_template_items: "hk_template_items",
+    inventory_items: "inventory_items",
+    inventory_moves: "inventory_moves",
+    expenses: "expenses"
+  };
+  let removed = 0;
+  for (const rec of body.records.slice(0, 50)) {
+    const table = tables[rec && rec.table];
+    const id = rec && rec.id;
+    if (!table || !id) continue;
+    let sql = null;
+    if (table === "clients") sql = "DELETE FROM clients WHERE id = ? AND IFNULL(is_sample,0)=1";
+    else if (table === "leads") sql = "DELETE FROM leads WHERE id = ? AND IFNULL(is_sample,0)=1";
+    else if (table === "leave_requests") sql = "DELETE FROM leave_requests WHERE id = ? AND IFNULL(is_sample,0)=1";
+    else if (table === "areas") sql = "DELETE FROM areas WHERE id = ? AND IFNULL(is_sample,0)=1";
+    else if (table === "hk_templates") sql = "DELETE FROM hk_templates WHERE id = ? AND IFNULL(is_sample,0)=1";
+    else if (table === "hk_template_items") sql = "DELETE FROM hk_template_items WHERE template_id = ? AND IFNULL(is_sample,0)=1";
+    else if (table === "inventory_items") sql = "DELETE FROM inventory_items WHERE id = ? AND IFNULL(is_sample,0)=1";
+    else if (table === "inventory_moves") sql = "DELETE FROM inventory_moves WHERE item_id = ? AND IFNULL(is_sample,0)=1";
+    else if (table === "expenses") sql = "DELETE FROM expenses WHERE id = ? AND IFNULL(is_sample,0)=1";
+    if (!sql) continue;
+    const result = await env.DB.prepare(sql).bind(id).run();
+    removed += (result && result.meta && result.meta.changes) || 0;
+  }
+  return json({ ok: true, removed }, 200, request);
+}
+
 async function sampleStatus(env, request) {
   const tables = ["users", "events", "requests", "shifts", "tasks", "announcements", "attendance",
     "clients", "leads", "quotes", "contracts", "payments", "packages",
@@ -2166,7 +2327,7 @@ async function exportReport(url, env, request, user) {
   }
   await audit(env, user, "export", table, null, `${format} download`, request);
   if (format === "xlsx") {
-    return fileResponse(toExcelXml(rows, columns, table), `${table}.xls`, "application/vnd.ms-excel", request);
+    return fileResponse(toXlsx(rows, columns, table), `${table}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", request);
   }
   return fileResponse(toCsv(rows, columns), `${table}.csv`, "text/csv; charset=utf-8", request);
 }
