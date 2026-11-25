@@ -179,9 +179,8 @@ function corsHeaders(request) {
   const allowed = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
   return {
     "Access-Control-Allow-Origin": allowed,
-    "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Access-Control-Max-Age": "86400",
     "Vary": "Origin",
     "X-Content-Type-Options": "nosniff",
@@ -307,22 +306,25 @@ function cookieFrom(request, name) {
   return "";
 }
 
-function sessionCookie(id, maxAgeSeconds) {
-  return `${COOKIE}=${encodeURIComponent(id)}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${maxAgeSeconds}`;
+function sessionIdFromRequest(request) {
+  const auth = request.headers.get("Authorization") || "";
+  const match = /^Bearer\s+(\S+)/i.exec(auth);
+  if (match) return match[1];
+  return cookieFrom(request, COOKIE);
 }
 
 async function requireUser(request, env) {
-  const sessionId = cookieFrom(request, COOKIE);
-  if (!sessionId) return json({ error: "Please sign in." }, 401, request);
+  const sessionId = sessionIdFromRequest(request);
+  if (!sessionId) return json({ error: "Please sign in.", code: "unauthenticated" }, 401, request);
   const row = await env.DB.prepare(
     `SELECT s.id AS session_id, s.expires_at, u.id, u.email, u.name, u.role, u.title, u.must_change_password
      FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.id = ?`
   ).bind(sessionId).first();
-  if (!row) return json({ error: "Please sign in." }, 401, request);
+  if (!row) return json({ error: "Please sign in.", code: "unauthenticated" }, 401, request);
   if (row.expires_at < isoNow()) {
     await env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(sessionId).run();
-    return json({ error: "Your session has ended. Please sign in again." }, 401, request);
+    return json({ error: "Your session has ended. Please sign in again.", code: "session_expired" }, 401, request);
   }
   return row;
 }
@@ -460,9 +462,7 @@ async function setupOwner(request, env) {
   }
   await env.DB.prepare("UPDATE setup_tokens SET used_at = ? WHERE id = ?").bind(now, row.id).run();
   const session = await createSession(env, id);
-  const response = json({ ok: true, user: { id, email, name, role: "owner", title: "Owner", mustChangePassword: false } }, 200, request);
-  response.headers.append("Set-Cookie", sessionCookie(session, SESSION_DAYS * 86400));
-  return response;
+  return json({ ok: true, user: { id, email, name, role: "owner", title: "Owner", mustChangePassword: false }, token: session.id, expiresAt: session.expiresAt }, 200, request);
 }
 
 async function login(request, env) {
@@ -483,26 +483,22 @@ async function login(request, env) {
   const ok = user && user.password_hash && timingSafeEqual(user.password_hash, hash);
   if (!ok) return json({ error: "Email or password is not right." }, 401, request);
   const session = await createSession(env, user.id);
-  const response = json({ ok: true, user: publicUser(user) }, 200, request);
-  response.headers.append("Set-Cookie", sessionCookie(session, SESSION_DAYS * 86400));
-  return response;
+  return json({ ok: true, user: publicUser(user), token: session.id, expiresAt: session.expiresAt }, 200, request);
 }
 
 async function createSession(env, userId) {
   const id = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
-  const expires = new Date(Date.now() + SESSION_DAYS * 86400 * 1000).toISOString();
+  const expiresAt = new Date(Date.now() + SESSION_DAYS * 86400 * 1000).toISOString();
   await env.DB.prepare(
     "INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)"
-  ).bind(id, userId, isoNow(), expires).run();
-  return id;
+  ).bind(id, userId, isoNow(), expiresAt).run();
+  return { id, expiresAt };
 }
 
 async function logout(request, env) {
-  const sessionId = cookieFrom(request, COOKIE);
+  const sessionId = sessionIdFromRequest(request);
   if (sessionId) await env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(sessionId).run();
-  const response = json({ ok: true }, 200, request);
-  response.headers.append("Set-Cookie", sessionCookie("", 0));
-  return response;
+  return json({ ok: true }, 200, request);
 }
 
 async function changePassword(request, env) {

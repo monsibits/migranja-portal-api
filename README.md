@@ -8,7 +8,7 @@ The public website talks to this API from `https://www.migranjaevents.com/book/`
 
 - Cloudflare Worker (free plan)
 - Cloudflare D1 (private database)
-- Session cookies (`HttpOnly`, `Secure`, `SameSite=None`) with roles checked on the server
+- Session tokens sent in the `Authorization` header, with roles checked on the server
 
 Google Sheets is not connected yet. D1 is the source of truth. A later step can export or sync to a private Sheet once a Google Cloud service account is available.
 
