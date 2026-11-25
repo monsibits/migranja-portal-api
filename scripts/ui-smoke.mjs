@@ -251,7 +251,7 @@ try {
     for (const route of ROUTES[role]) {
       const before = errors.length;
       await page.evaluate((hash) => { window.location.hash = hash; }, `#/${route}`);
-      await sleep(1200);
+      await sleep(2000);
       const body = await page.evaluate(() => {
         const app = document.querySelector("#app-screen");
         const login = document.querySelector("#login-screen");
