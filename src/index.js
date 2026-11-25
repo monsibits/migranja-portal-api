@@ -314,6 +314,7 @@ export {
   dateVenueTaken,
   deny,
   eventColumns,
+  eventsFromSql,
   isoNow,
   json,
   originAllowed,

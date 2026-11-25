@@ -10,6 +10,7 @@ import {
   dateVenueTaken,
   deny,
   eventColumns,
+  eventsFromSql,
   isoNow,
   json,
   originAllowed,
@@ -898,7 +899,7 @@ async function createQuote(request, env, user) {
   for (const field of [clientName, status, discount, notes, valid, eventDate]) {
     if (field.error) return json({ error: field.error }, 400, request);
   }
-  const lines = Array.isArray(body.lines) && body.lines.length
+  let lines = Array.isArray(body.lines) && body.lines.length
     ? body.lines
     : body.package_id
       ? [{ label: "Package", qty: 1, unit_price: Number(body.base_fee || 0) }]
@@ -1231,7 +1232,7 @@ async function eventBalance(env, request, user, id) {
 }
 
 async function getEventSheet(env, request, user, id) {
-  const event = await env.DB.prepare(`SELECT ${eventColumns(user.role)} FROM events e WHERE e.id = ?`).bind(id).first();
+  const event = await env.DB.prepare(`${eventsFromSql(user.role)} WHERE e.id = ?`).bind(id).first();
   if (!event) return json({ error: "Event not found." }, 404, request);
   const details = await env.DB.prepare("SELECT * FROM event_details WHERE event_id = ?").bind(id).first();
   const shifts = await listBy(env, request, `SELECT shifts.*, u.name AS staff_name FROM shifts LEFT JOIN users u ON u.id = shifts.staff_id WHERE shifts.event_id = ? ORDER BY shifts.start`, [id]);

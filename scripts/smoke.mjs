@@ -181,7 +181,7 @@ if (ownerToken) {
   const noConfirm = await request("/api/sample/remove", { method: "POST", token: ownerToken, body: {} });
   check("remove-sample requires confirm", noConfirm.status === 400, `HTTP ${noConfirm.status}`);
 
-  const profitList = await request("/api/accounting/event-profit", { token: ownerToken });
+  const profitList = await request("/api/accounting/event-profit?sample=1", { token: ownerToken });
   const profitId = ((((profitList.data && profitList.data.events) || [])[0] || {}).event_id);
   if (profitId) {
     const one = await request(`/api/accounting/event-profit/${profitId}`, { token: ownerToken });
