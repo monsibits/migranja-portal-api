@@ -203,8 +203,8 @@ export async function handleOps(request, env, url, user) {
 
   if (path === "/api/settings" && method === "GET") {
     if (!user) return deny(request);
-    const hasSample = await hasSampleRows(env);
-    const demoMode = await getDemoMode(env);
+    const hasSample = await hasSampleRows(env, request);
+    const demoMode = await getDemoMode(env, request);
     return json({ demo_mode: demoMode, hasSample }, 200, request);
   }
   if (path === "/api/settings" && method === "PATCH") {
@@ -213,10 +213,10 @@ export async function handleOps(request, env, url, user) {
     const body = await readJson(request);
     if (!body) return json({ error: "Please complete the form." }, 400, request);
     if (body.demo_mode === undefined) return json({ error: "Please send demo_mode." }, 400, request);
-    const hasSample = await hasSampleRows(env);
+    const hasSample = await hasSampleRows(env, request);
     const demoMode = hasSample ? await setDemoMode(env, Boolean(body.demo_mode), user) : false;
     await env.DB.batch([
-      auditStmt(env, user, "update", "app_settings", "demo_mode", demoMode ? "on" : "off", request, 0)
+      auditStmt(env, user, "update", "app_settings", "demo_mode", demoMode ? "on" : "off", request)
     ]);
     return json({ demo_mode: demoMode, hasSample }, 200, request);
   }
@@ -505,8 +505,8 @@ function parseItemLabels(raw) {
 
 async function dashboard(env, request, user) {
   const today = todayISO();
-  const demoMode = await getDemoMode(env);
-  const hasSample = await hasSampleRows(env);
+  const demoMode = await getDemoMode(env, request);
+  const hasSample = await hasSampleRows(env, request);
   const year = Number(today.slice(0, 4));
   const month = Number(today.slice(5, 7));
   const { from, to, days } = monthRange(year, month);
@@ -2140,7 +2140,8 @@ async function listExpenses(env, request) {
   const real = rows.filter((row) => !row.is_sample && !row.voided_at);
   const sample = rows.filter((row) => row.is_sample && !row.voided_at);
   const sum = (list) => list.reduce((n, row) => n + (row.amount || 0), 0);
-  return json({ expenses: rows, totals: { real: sum(real), sample: sum(sample) }, categories: EXPENSE_CATEGORIES }, 200, request);
+  const demoMode = await getDemoMode(env, request);
+  return json({ expenses: rows, totals: { real: sum(real), sample: sum(sample) }, categories: EXPENSE_CATEGORIES, demoMode }, 200, request);
 }
 
 async function createExpense(request, env, user) {
@@ -2237,7 +2238,7 @@ function periodParams(request) {
 
 async function pnlReport(env, request, user) {
   const { from, to, range } = periodParams(request);
-  const demoMode = await getDemoMode(env);
+  const demoMode = await getDemoMode(env, request);
   const payments = await listBy(env, request, "SELECT * FROM payments WHERE voided_at IS NULL AND received_at >= ? AND received_at <= ?", [from, to]);
   const expenses = await listBy(env, request, "SELECT * FROM expenses WHERE voided_at IS NULL AND date >= ? AND date <= ?", [from, to]);
   const payroll = await listBy(env, request, `SELECT p.end_date AS date, p.is_sample, SUM(l.gross) AS amount
@@ -2273,7 +2274,7 @@ async function pnlReport(env, request, user) {
 
 async function cashflowReport(env, request, user) {
   const { from, to, range } = periodParams(request);
-  const demoMode = await getDemoMode(env);
+  const demoMode = await getDemoMode(env, request);
   const payments = await listBy(env, request, "SELECT * FROM payments WHERE voided_at IS NULL AND received_at >= ? AND received_at <= ?", [from, to]);
   const expenses = await listBy(env, request, "SELECT * FROM expenses WHERE voided_at IS NULL AND date >= ? AND date <= ?", [from, to]);
   const petty = await listBy(env, request, "SELECT * FROM petty_cash WHERE date >= ? AND date <= ?", [from, to]);
@@ -2305,7 +2306,7 @@ async function cashflowReport(env, request, user) {
 
 async function eventProfitList(env, request, user) {
   const url = new URL(request.url);
-  const includeSample = url.searchParams.get("sample") === "1" || await getDemoMode(env);
+  const includeSample = url.searchParams.get("sample") === "1" || await getDemoMode(env, request);
   const sql = includeSample
     ? "SELECT * FROM v_event_balance ORDER BY date"
     : "SELECT * FROM v_event_balance WHERE IFNULL(is_sample,0)=0 ORDER BY date";
@@ -2662,28 +2663,35 @@ async function patchLeave(id, request, env, user) {
   } else if (user.role !== "owner" && user.role !== "admin" && existing.user_id !== user.id) {
     return deny(request);
   }
-  const results = await env.DB.batch([
-    env.DB.prepare("UPDATE leave_requests SET status = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = ?").bind(next, user.id, isoNow(), id, current),
+  const updated = await env.DB.prepare(
+    "UPDATE leave_requests SET status = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = ?"
+  ).bind(next, user.id, isoNow(), id, current).run();
+  const changes = updated && updated.meta && updated.meta.changes;
+  if (changes !== 1) return json({ error: "This leave request was just updated by someone else." }, 409, request);
+  await env.DB.batch([
     auditStmt(env, user, "update", "leave_requests", id, `${current}→${next}`, request, existing.is_sample)
   ]);
-  const changes = results[0] && results[0].meta && results[0].meta.changes;
-  if (changes !== 1) return json({ error: "This leave request was just updated by someone else." }, 409, request);
   return json({ request: await env.DB.prepare("SELECT * FROM leave_requests WHERE id = ?").bind(id).first() }, 200, request);
 }
 
 async function reportSummary(env, request, user) {
   const { from, to, range } = periodParams(request);
-  const demoMode = await getDemoMode(env);
+  const demoMode = await getDemoMode(env, request);
   const events = await listBy(env, request, "SELECT * FROM events WHERE date >= ? AND date <= ? ORDER BY date", [from, to]);
   const payments = user.role === "owner" ? await listBy(env, request, "SELECT * FROM payments WHERE voided_at IS NULL AND received_at >= ? AND received_at <= ?", [from, to]) : [];
   const expenses = user.role === "owner" ? await listBy(env, request, "SELECT * FROM expenses WHERE voided_at IS NULL AND date >= ? AND date <= ?", [from, to]) : [];
   const attendance = await listBy(env, request, "SELECT * FROM attendance WHERE date >= ? AND date <= ?", [from, to]);
   const visibleEv = demoMode ? events : events.filter((row) => !row.is_sample);
+  const payroll = user.role === "owner" ? await listBy(env, request, `SELECT p.end_date AS date, p.is_sample, SUM(l.gross) AS amount
+    FROM payroll_periods p JOIN payroll_lines l ON l.period_id = p.id
+    WHERE p.status = 'paid' AND p.end_date >= ? AND p.end_date <= ?
+    GROUP BY p.id, p.end_date, p.is_sample`, [from, to]) : [];
   const visiblePay = demoMode ? payments : payments.filter((p) => !p.is_sample);
   const visibleExp = demoMode ? expenses : expenses.filter((p) => !p.is_sample);
+  const visiblePayr = demoMode ? payroll : payroll.filter((p) => !p.is_sample);
   const visibleAtt = demoMode ? attendance : attendance.filter((row) => !row.is_sample);
   const income = visiblePay.reduce((s, p) => s + (p.kind === "refund" ? -p.amount : p.amount || 0), 0);
-  const expense = visibleExp.reduce((s, p) => s + (p.amount || 0), 0);
+  const expense = visibleExp.reduce((s, p) => s + (p.amount || 0), 0) + visiblePayr.reduce((s, p) => s + (p.amount || 0), 0);
   return json({
     from, to, range, demoMode,
     events: visibleEv.length,

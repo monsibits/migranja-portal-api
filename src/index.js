@@ -307,7 +307,11 @@ const ALLOW_WHILE_PASSWORD_CHANGE = new Set([
 ]);
 
 
-async function hasSampleRows(env) {
+const demoMemo = new WeakMap();
+
+async function hasSampleRows(env, request) {
+  const memo = request ? demoMemo.get(request) : null;
+  if (memo && memo.hasSample !== undefined) return memo.hasSample;
   const row = await env.DB.prepare(
     `SELECT CASE WHEN
         EXISTS (SELECT 1 FROM events WHERE IFNULL(is_sample,0)=1)
@@ -318,7 +322,13 @@ async function hasSampleRows(env) {
         OR EXISTS (SELECT 1 FROM users WHERE IFNULL(is_sample,0)=1)
       THEN 1 ELSE 0 END AS ok`
   ).first();
-  return Boolean(row && row.ok);
+  const value = Boolean(row && row.ok);
+  if (request) {
+    const bag = demoMemo.get(request) || {};
+    bag.hasSample = value;
+    demoMemo.set(request, bag);
+  }
+  return value;
 }
 
 async function ensureAppSettings(env) {
@@ -332,13 +342,31 @@ async function ensureAppSettings(env) {
   ).run();
 }
 
-async function getDemoMode(env) {
-  const hasSample = await hasSampleRows(env);
-  if (!hasSample) return false;
-  await ensureAppSettings(env);
-  const row = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'demo_mode'").first();
-  if (!row) return true;
-  return row.value === "1" || row.value === "true";
+async function getDemoMode(env, request) {
+  const memo = request ? demoMemo.get(request) : null;
+  if (memo && memo.demoMode !== undefined) return memo.demoMode;
+  const hasSample = await hasSampleRows(env, request);
+  if (!hasSample) {
+    if (request) {
+      const bag = demoMemo.get(request) || {};
+      bag.demoMode = false;
+      demoMemo.set(request, bag);
+    }
+    return false;
+  }
+  let row = null;
+  try {
+    row = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'demo_mode'").first();
+  } catch (_) {
+    row = null;
+  }
+  const value = !row ? true : (row.value === "1" || row.value === "true");
+  if (request) {
+    const bag = demoMemo.get(request) || {};
+    bag.demoMode = value;
+    demoMemo.set(request, bag);
+  }
+  return value;
 }
 
 async function setDemoMode(env, on, user) {
@@ -2012,7 +2040,7 @@ async function createAnnouncement(request, env, user) {
 }
 
 async function listFinances(env, request) {
-  const demoMode = await getDemoMode(env);
+  const demoMode = await getDemoMode(env, request);
   const { results } = await env.DB.prepare(
     `SELECT event_id AS id, date, client, title, status, is_sample,
             contract_total, collected, balance
@@ -2214,7 +2242,10 @@ async function cleanupSmoke(request, env, user) {
     }
     if (!tagged.length && spec.table === "attendance") {
       const punch = rows[0] || await env.DB.prepare("SELECT * FROM attendance WHERE id = ? AND IFNULL(is_sample,0)=1").bind(id).first();
-      if (punch) tagged = [punch];
+      const started = String((body && body.run_started_at) || "").trim();
+      if (punch && started && `${punch.date || ""}T${punch.time_in || "00:00"}` >= started.slice(0, 16)) {
+        tagged = [punch];
+      }
     }
     if (!tagged.length) continue;
     const result = await env.DB.prepare(`DELETE FROM ${spec.table} WHERE ${spec.idCol} = ? AND IFNULL(is_sample,0)=1`).bind(id).run();
@@ -2240,7 +2271,7 @@ async function sampleStatus(env, request) {
     counts[table] = Number(row && row.n) || 0;
     if (counts[table]) hasSample = true;
   }
-  const demoMode = hasSample ? await getDemoMode(env) : false;
+  const demoMode = hasSample ? await getDemoMode(env, request) : false;
   return json({ hasSample, demoMode, counts }, 200, request);
 }
 
@@ -2389,8 +2420,8 @@ async function listAudit(env, request) {
 }
 
 
-async function exportIncludesSample(env) {
-  return getDemoMode(env);
+async function exportIncludesSample(env, request) {
+  return getDemoMode(env, request);
 }
 
 function tagExportRows(rows) {
@@ -2416,7 +2447,7 @@ async function exportReport(url, env, request, user) {
     housekeeping: user.role === "owner" || user.role === "admin"
   };
   if (!allow[table]) return json({ error: "Please pick a report you can download." }, 400, request);
-  const includeSample = await exportIncludesSample(env);
+  const includeSample = await exportIncludesSample(env, request);
   const sampleFilter = includeSample ? "" : " AND IFNULL(is_sample,0)=0";
   const attSampleFilter = includeSample ? "" : " AND IFNULL(attendance.is_sample,0)=0";
   let rows = [];

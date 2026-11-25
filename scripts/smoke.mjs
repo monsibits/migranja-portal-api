@@ -103,6 +103,7 @@ const ownerToken = users.owner
   : null;
 if (!ownerToken) console.log("SKIP  SAMPLE owner unavailable — admin and staff checks still run");
 const runId = `SMK-${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+const runStartedAt = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Manila" }).replace(" ", "T");
 const stamp = runId;
 const created = [];
 
@@ -374,7 +375,7 @@ if (ownerToken) {
 }
 
 if (ownerToken && created.length) {
-  const cleanup = await request("/api/sample/cleanup-smoke", { method: "POST", token: ownerToken, body: { run_id: runId, records: created } });
+  const cleanup = await request("/api/sample/cleanup-smoke", { method: "POST", token: ownerToken, body: { run_id: runId, run_started_at: runStartedAt, records: created } });
   check("smoke records cleaned up", cleanup.status === 200, `HTTP ${cleanup.status}`);
 }
 if (ownerToken) await logout(ownerToken);
