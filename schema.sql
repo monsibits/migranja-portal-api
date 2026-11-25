@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_salt TEXT,
   password_set_at TEXT,
   must_change_password INTEGER NOT NULL DEFAULT 0,
+  is_sample INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -42,7 +43,8 @@ CREATE TABLE IF NOT EXISTS events (
   deposit INTEGER,
   from_request TEXT,
   created_at TEXT NOT NULL,
-  created_by TEXT
+  created_by TEXT,
+  is_sample INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS requests (
@@ -57,7 +59,8 @@ CREATE TABLE IF NOT EXISTS requests (
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
   decided_at TEXT,
-  decided_by TEXT
+  decided_by TEXT,
+  is_sample INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS shifts (
@@ -69,6 +72,7 @@ CREATE TABLE IF NOT EXISTS shifts (
   role TEXT,
   event_id TEXT,
   created_at TEXT NOT NULL,
+  is_sample INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (staff_id) REFERENCES users(id)
 );
 
@@ -80,6 +84,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   due TEXT,
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
+  is_sample INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (staff_id) REFERENCES users(id)
 );
 
@@ -89,7 +94,8 @@ CREATE TABLE IF NOT EXISTS announcements (
   title TEXT NOT NULL,
   body TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  created_by TEXT
+  created_by TEXT,
+  is_sample INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS attendance (
@@ -98,6 +104,7 @@ CREATE TABLE IF NOT EXISTS attendance (
   date TEXT NOT NULL,
   time_in TEXT,
   time_out TEXT,
+  is_sample INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (staff_id) REFERENCES users(id)
 );
 

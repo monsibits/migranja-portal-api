@@ -31,3 +31,5 @@ Until the owner password is set, open the one-time setup page on the live site (
 ## Browser support
 
 Recent Chrome, Firefox, Safari, and Edge (last two major versions).
+
+Sample records in the private database are marked and can be removed by the owner. They do not appear on the public booking calendar.

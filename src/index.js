@@ -152,6 +152,15 @@ async function handle(request, env) {
     return patchUser(url.pathname.split("/").pop(), request, env, user);
   }
 
+  if (url.pathname === "/api/sample" && request.method === "GET") {
+    if (user.role !== "owner") return deny(request);
+    return sampleStatus(env, request);
+  }
+  if (url.pathname === "/api/sample/remove" && request.method === "POST") {
+    if (user.role !== "owner") return deny(request);
+    return removeSample(request, env);
+  }
+
   return json({ error: "Not found" }, 404, request);
 }
 
@@ -170,7 +179,8 @@ function publicUser(user) {
     name: user.name,
     role: user.role,
     title: user.title,
-    mustChangePassword: Boolean(user.must_change_password)
+    mustChangePassword: Boolean(user.must_change_password),
+    isSample: Boolean(user.is_sample)
   };
 }
 
@@ -340,10 +350,10 @@ async function getCalendar(url, env, request) {
   const endYear = month === 12 ? year + 1 : year;
   const end = `${endYear}-${String(endMonth).padStart(2, "0")}-01`;
   const events = await env.DB.prepare(
-    "SELECT date, status FROM events WHERE date >= ? AND date < ?"
+    "SELECT date, status FROM events WHERE date >= ? AND date < ? AND IFNULL(is_sample, 0) = 0"
   ).bind(start, end).all();
   const requests = await env.DB.prepare(
-    "SELECT date, status FROM requests WHERE date >= ? AND date < ? AND status = 'pending'"
+    "SELECT date, status FROM requests WHERE date >= ? AND date < ? AND status = 'pending' AND IFNULL(is_sample, 0) = 0"
   ).bind(start, end).all();
   const days = {};
   for (const event of events.results || []) {
@@ -407,11 +417,11 @@ async function createPublicRequest(request, env) {
 
 async function dateStatus(env, iso) {
   const booked = await env.DB.prepare(
-    "SELECT 1 FROM events WHERE date = ? AND status IN ('Confirmed', 'Tentative', 'Setup', 'Booked') LIMIT 1"
+    "SELECT 1 FROM events WHERE date = ? AND status IN ('Confirmed', 'Tentative', 'Setup', 'Booked') AND IFNULL(is_sample, 0) = 0 LIMIT 1"
   ).bind(iso).first();
   if (booked) return "booked";
   const pending = await env.DB.prepare(
-    "SELECT 1 FROM requests WHERE date = ? AND status = 'pending' LIMIT 1"
+    "SELECT 1 FROM requests WHERE date = ? AND status = 'pending' AND IFNULL(is_sample, 0) = 0 LIMIT 1"
   ).bind(iso).first();
   if (pending) return "pending";
   return "available";
@@ -602,8 +612,8 @@ async function decideRequest(id, request, env, user) {
   ).bind(decision, now, user.id, id).run();
   if (decision === "approved") {
     await env.DB.prepare(
-      `INSERT INTO events (id, date, client, title, type, package, pax, venue, status, fee, deposit, from_request, created_at, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Confirmed', NULL, NULL, ?, ?, ?)`
+      `INSERT INTO events (id, date, client, title, type, package, pax, venue, status, fee, deposit, from_request, created_at, created_by, is_sample)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Confirmed', NULL, NULL, ?, ?, ?, ?)`
     ).bind(
       randomId(),
       req.date,
@@ -615,7 +625,8 @@ async function decideRequest(id, request, env, user) {
       req.venue || "To be assigned",
       req.id,
       now,
-      user.id
+      user.id,
+      req.is_sample ? 1 : 0
     ).run();
   }
   const updated = await env.DB.prepare("SELECT * FROM requests WHERE id = ?").bind(id).first();
@@ -734,7 +745,7 @@ async function createAnnouncement(request, env, user) {
 
 async function listFinances(env, request) {
   const { results } = await env.DB.prepare(
-    "SELECT id, date, client, title, fee, deposit, status FROM events ORDER BY date ASC"
+    "SELECT id, date, client, title, fee, deposit, status, is_sample FROM events ORDER BY date ASC"
   ).all();
   const events = results || [];
   const fees = events.reduce((sum, event) => sum + (event.fee || 0), 0);
@@ -744,7 +755,7 @@ async function listFinances(env, request) {
 
 async function listUsers(env, request) {
   const { results } = await env.DB.prepare(
-    "SELECT id, email, name, role, title, created_at, password_set_at FROM users ORDER BY name ASC"
+    "SELECT id, email, name, role, title, created_at, password_set_at, is_sample FROM users ORDER BY name ASC"
   ).all();
   return json({ users: results || [] }, 200, request);
 }
@@ -810,3 +821,31 @@ async function patchUser(id, request, env, actor) {
   ).bind(id).first();
   return json({ user }, 200, request);
 }
+
+async function sampleStatus(env, request) {
+  const tables = ["users", "events", "requests", "shifts", "tasks", "announcements", "attendance"];
+  const counts = {};
+  let hasSample = false;
+  for (const table of tables) {
+    const row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE IFNULL(is_sample, 0) = 1`).first();
+    counts[table] = Number(row && row.n) || 0;
+    if (counts[table]) hasSample = true;
+  }
+  return json({ hasSample, counts }, 200, request);
+}
+
+async function removeSample(request, env) {
+  if (!originAllowed(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
+  await env.DB.prepare(
+    "DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE IFNULL(is_sample, 0) = 1 AND role != 'owner')"
+  ).run();
+  await env.DB.prepare("DELETE FROM attendance WHERE IFNULL(is_sample, 0) = 1").run();
+  await env.DB.prepare("DELETE FROM tasks WHERE IFNULL(is_sample, 0) = 1").run();
+  await env.DB.prepare("DELETE FROM shifts WHERE IFNULL(is_sample, 0) = 1").run();
+  await env.DB.prepare("DELETE FROM announcements WHERE IFNULL(is_sample, 0) = 1").run();
+  await env.DB.prepare("DELETE FROM events WHERE IFNULL(is_sample, 0) = 1").run();
+  await env.DB.prepare("DELETE FROM requests WHERE IFNULL(is_sample, 0) = 1").run();
+  await env.DB.prepare("DELETE FROM users WHERE IFNULL(is_sample, 0) = 1 AND role != 'owner'").run();
+  return sampleStatus(env, request);
+}
+

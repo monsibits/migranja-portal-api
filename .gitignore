@@ -3,3 +3,4 @@ node_modules/
 .setup-url
 .wrangler/
 *.log
+.sample-staff
