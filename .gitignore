@@ -1,0 +1,5 @@
+node_modules/
+.dev.vars
+.setup-url
+.wrangler/
+*.log
