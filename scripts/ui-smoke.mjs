@@ -248,6 +248,25 @@ try {
     }
     check(`${role} boot`, true);
 
+    if (role === "owner") {
+      const demo = await page.evaluate(() => {
+        const bar = document.querySelector("[data-demo-bar]");
+        const stats = Array.from(document.querySelectorAll("#main .stat")).map((el) => (el.textContent || "").trim());
+        const labels = Array.from(document.querySelectorAll("#main svg text")).map((el) => (el.textContent || "").trim()).filter(Boolean);
+        const money = stats.filter((text) => /₱/.test(text));
+        return {
+          barVisible: !!(bar && !bar.hidden),
+          barText: ((bar && bar.innerText) || "").replace(/\s+/g, " ").trim(),
+          stats,
+          moneyNonZero: money.some((text) => !/^₱0(\.00)?$/.test(text.replace(/,/g, ""))),
+          hasYear: labels.some((text) => /20\d{2}/.test(text))
+        };
+      });
+      check("owner dashboard shows Demo mode", demo.barVisible && /Demo mode/i.test(demo.barText), demo.barText.slice(0, 160));
+      check("owner dashboard KPIs are not zero", demo.moneyNonZero, `stats=${demo.stats.join(" | ")}`);
+      check("owner chart labels include the year", demo.hasYear, "no year on chart labels");
+    }
+
     for (const route of ROUTES[role]) {
       const before = errors.length;
       await page.evaluate((hash) => { window.location.hash = hash; }, `#/${route}`);

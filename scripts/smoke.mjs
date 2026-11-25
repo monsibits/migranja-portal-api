@@ -175,6 +175,23 @@ check("admin dashboard low-stock hides unit_cost", dash.status === 200 && !lowLe
 await logout(adminDashToken);
 
 if (ownerToken) {
+  const settings = await request("/api/settings", { token: ownerToken });
+  check("settings reports demo mode on", settings.status === 200 && settings.data && settings.data.demo_mode === true && settings.data.hasSample === true, JSON.stringify(settings.data || {}));
+
+  const ownerDash = await request("/api/dashboard", { token: ownerToken });
+  const kpis = (ownerDash.data && ownerDash.data.kpis) || {};
+  const chart = (ownerDash.data && ownerDash.data.chart) || [];
+  check("owner dashboard demoMode is on", ownerDash.status === 200 && ownerDash.data && ownerDash.data.demoMode === true, `demoMode=${ownerDash.data && ownerDash.data.demoMode}`);
+  check("owner KPIs include sample revenue", (kpis.revenueMonth || 0) > 0, `revenueMonth=${kpis.revenueMonth}`);
+  check("owner KPIs include upcoming events", (kpis.upcomingEvents || 0) > 0, `upcoming=${kpis.upcomingEvents}`);
+  check("owner chart has year labels and non-zero values", chart.some((row) => (row.revenue || 0) > 0) && chart.some((row) => /20\d{2}/.test(row.label || "")), `labels=${chart.map((row) => row.label || row.month).join(",")}`);
+
+  const pnl = await request("/api/accounting/pnl?range=monthly", { token: ownerToken });
+  check("owner monthly P&L is non-zero in demo mode", pnl.status === 200 && pnl.data && pnl.data.demoMode === true && (pnl.data.income || 0) > 0 && (pnl.data.expenses || 0) > 0, `income=${pnl.data && pnl.data.income} expenses=${pnl.data && pnl.data.expenses}`);
+
+  const finances = await request("/api/finances", { token: ownerToken });
+  check("owner finances totals are non-zero in demo mode", finances.status === 200 && finances.data && finances.data.demoMode === true && (((finances.data.totals || {}).fees) || 0) > 0, `fees=${finances.data && finances.data.totals && finances.data.totals.fees}`);
+
   const badQuote = await request("/api/quotes", { method: "POST", token: ownerToken, body: { client_name: `SAMPLE Smoke Neg ${stamp}`, event_date: "2028-09-01", venue: "Garden", lines: [{ label: "Bad", qty: 1, unit_price: -10 }] } });
   check("negative quote amount rejected", badQuote.status === 400, `HTTP ${badQuote.status}`);
 
@@ -248,6 +265,111 @@ if (ownerToken) {
       const unrecv = await request(`/api/purchase-orders/${poId}`, { method: "PATCH", token: ownerToken, body: { status: "ordered" } });
       check("un-receiving a PO is blocked", unrecv.status === 400, `HTTP ${unrecv.status}`);
     }
+  }
+
+  const dupItem = await request("/api/inventory/items", { method: "POST", token: ownerToken, body: {
+    name: `SAMPLE Smoke DupLines ${stamp}`,
+    category: "supplies",
+    unit: "pc",
+    qty_on_hand: 0,
+    reorder_level: 0,
+    notes: stamp
+  }});
+  check("create item for duplicate PO lines", dupItem.status === 201, `HTTP ${dupItem.status}`);
+  const dupItemId = dupItem.data && dupItem.data.item && dupItem.data.item.id;
+  if (dupItemId) {
+    created.push({ table: "inventory_moves", id: dupItemId });
+    created.push({ table: "inventory_items", id: dupItemId });
+    const dupPo = await request("/api/purchase-orders", { method: "POST", token: ownerToken, body: {
+      notes: stamp,
+      status: "ordered",
+      lines: [
+        { item_id: dupItemId, label: "Line A", qty: 2, unit_cost: 10 },
+        { item_id: dupItemId, label: "Line B", qty: 3, unit_cost: 10 }
+      ]
+    }});
+    check("create PO with two lines for one item", dupPo.status === 201, `HTTP ${dupPo.status}`);
+    const dupPoId = dupPo.data && dupPo.data.order && dupPo.data.order.id;
+    if (dupPoId) {
+      created.push({ table: "po_lines", id: dupPoId });
+      created.push({ table: "purchase_orders", id: dupPoId });
+      const received = await request(`/api/purchase-orders/${dupPoId}`, { method: "PATCH", token: ownerToken, body: { status: "received" } });
+      check("receive PO with duplicate item lines", received.status === 200, `HTTP ${received.status}`);
+      const itemsAfter = await request("/api/inventory/items", { token: ownerToken });
+      const row = ((itemsAfter.data && itemsAfter.data.items) || []).find((item) => item.id === dupItemId);
+      const moves = await request(`/api/inventory/moves?item=${dupItemId}`, { token: ownerToken });
+      const recvMoves = ((moves.data && moves.data.moves) || []).filter((move) => move.kind === "receive" && move.item_id === dupItemId);
+      const moveQty = recvMoves.reduce((sum, move) => sum + (Number(move.qty) || 0), 0);
+      check("duplicate PO lines write one move each", recvMoves.length === 2 && Number(row && row.qty_on_hand) === 5 && moveQty === 5, `moves=${recvMoves.length} qty=${row && row.qty_on_hand} moveQty=${moveQty}`);
+    }
+  }
+
+  const cancelledPo = await request("/api/purchase-orders", { method: "POST", token: ownerToken, body: {
+    notes: stamp,
+    status: "cancelled",
+    lines: [{ item_id: dupItemId || itemId, label: "Cancelled line", qty: 1, unit_cost: 10 }]
+  }});
+  check("create cancelled PO", cancelledPo.status === 201, `HTTP ${cancelledPo.status}`);
+  const cancelledId = cancelledPo.data && cancelledPo.data.order && cancelledPo.data.order.id;
+  if (cancelledId) {
+    created.push({ table: "po_lines", id: cancelledId });
+    created.push({ table: "purchase_orders", id: cancelledId });
+    const receiveCancelled = await request(`/api/purchase-orders/${cancelledId}`, { method: "PATCH", token: ownerToken, body: { status: "received" } });
+    check("receiving a cancelled PO is blocked", receiveCancelled.status === 400, `HTTP ${receiveCancelled.status}`);
+  }
+
+  const reqA = await request("/api/requests/new", { method: "POST", token: ownerToken, body: {
+    name: `SAMPLE Smoke Race A ${stamp}`,
+    contact: "09170000001",
+    date: "2028-11-18",
+    venue: "The Nook",
+    type: "Wedding",
+    pax: 80,
+    notes: stamp
+  }});
+  const reqB = await request("/api/requests/new", { method: "POST", token: ownerToken, body: {
+    name: `SAMPLE Smoke Race B ${stamp}`,
+    contact: "09170000002",
+    date: "2028-11-18",
+    venue: "The Nook",
+    type: "Wedding",
+    pax: 80,
+    notes: stamp
+  }});
+  check("create two pending requests for the same date", reqA.status === 201 && reqB.status === 201, `A=${reqA.status} B=${reqB.status}`);
+  const reqAId = reqA.data && reqA.data.request && reqA.data.request.id;
+  const reqBId = reqB.data && reqB.data.request && reqB.data.request.id;
+  if (reqAId) created.push({ table: "requests", id: reqAId });
+  if (reqBId) created.push({ table: "requests", id: reqBId });
+  if (reqAId && reqBId) {
+    const decisions = await Promise.all([
+      request(`/api/requests/${reqAId}/decide`, { method: "POST", token: ownerToken, body: { decision: "approved" } }),
+      request(`/api/requests/${reqBId}/decide`, { method: "POST", token: ownerToken, body: { decision: "approved" } })
+    ]);
+    const ok = decisions.filter((row) => row.status === 200);
+    const conflict = decisions.filter((row) => row.status === 409);
+    check("parallel request approve is atomic", ok.length === 1 && conflict.length === 1, `ok=${ok.length} 409=${conflict.length} other=${decisions.filter((row) => row.status !== 200 && row.status !== 409).map((row) => row.status).join(",")}`);
+    const eventId = ok[0] && ok[0].data && ok[0].data.request && ok[0].data.request.id
+      ? (ok[0].data.eventId || null)
+      : null;
+    // decideRequest returns { request }, not eventId. Look up events later if needed.
+    const winner = ok[0] && ok[0].data && ok[0].data.request;
+    if (winner) {
+      const events = await request("/api/events", { token: ownerToken });
+      const made = ((events.data && events.data.events) || []).find((event) => event.from_request === winner.id);
+      if (made) created.push({ table: "events", id: made.id });
+    }
+  }
+
+  const beforeClock = await request("/api/attendance/clock", { method: "POST", token: ownerToken, body: {} });
+  check("sample owner can clock", beforeClock.status === 200, `HTTP ${beforeClock.status}`);
+  const punches = (beforeClock.data && beforeClock.data.attendance) || [];
+  const todayPunch = punches.find((row) => row.date && String(row.date).startsWith(new Date().toLocaleString("en-CA", { timeZone: "Asia/Manila" }).slice(0, 10))) || punches[0];
+  check("sample clock-in stays sample", todayPunch && (todayPunch.is_sample === 1 || todayPunch.is_sample === true), `is_sample=${todayPunch && todayPunch.is_sample}`);
+  if (todayPunch && todayPunch.id) created.push({ table: "attendance", id: todayPunch.id });
+  if (todayPunch && todayPunch.time_in && !todayPunch.time_out) {
+    const clockOut = await request("/api/attendance/clock", { method: "POST", token: ownerToken, body: {} });
+    check("sample clock-out stays sample", clockOut.status === 200 && ((clockOut.data && clockOut.data.attendance) || []).some((row) => row.id === todayPunch.id && (row.is_sample === 1 || row.is_sample === true)), `HTTP ${clockOut.status}`);
   }
 }
 

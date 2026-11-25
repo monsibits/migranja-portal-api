@@ -306,11 +306,60 @@ const ALLOW_WHILE_PASSWORD_CHANGE = new Set([
   "POST /api/auth/logout-all"
 ]);
 
+
+async function hasSampleRows(env) {
+  const row = await env.DB.prepare(
+    `SELECT 1 AS ok FROM events WHERE IFNULL(is_sample,0)=1
+     UNION SELECT 1 FROM payments WHERE IFNULL(is_sample,0)=1
+     UNION SELECT 1 FROM expenses WHERE IFNULL(is_sample,0)=1
+     UNION SELECT 1 FROM tasks WHERE IFNULL(is_sample,0)=1
+     UNION SELECT 1 FROM inventory_items WHERE IFNULL(is_sample,0)=1
+     UNION SELECT 1 FROM users WHERE IFNULL(is_sample,0)=1
+     LIMIT 1`
+  ).first();
+  return Boolean(row);
+}
+
+async function ensureAppSettings(env) {
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT,
+      updated_by TEXT
+    )`
+  ).run();
+}
+
+async function getDemoMode(env) {
+  const hasSample = await hasSampleRows(env);
+  if (!hasSample) return false;
+  await ensureAppSettings(env);
+  const row = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'demo_mode'").first();
+  if (!row) return true;
+  return row.value === "1" || row.value === "true";
+}
+
+async function setDemoMode(env, on, user) {
+  await ensureAppSettings(env);
+  const value = on ? "1" : "0";
+  const at = isoNow();
+  const by = user && user.id ? user.id : null;
+  await env.DB.prepare(
+    `INSERT INTO app_settings (key, value, updated_at, updated_by) VALUES ('demo_mode', ?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`
+  ).bind(value, at, by).run();
+  return value === "1";
+}
+
 export {
   HELD_STATUSES,
   allow,
   audit,
   auditStmt,
+  getDemoMode,
+  hasSampleRows,
+  setDemoMode,
   dateVenueTaken,
   deny,
   eventColumns,
@@ -422,6 +471,10 @@ async function handle(request, env, url, requestId) {
   if (url.pathname === "/api/requests" && request.method === "GET") {
     if (!allow(user, "requests", "read")) return deny(request);
     return listRequests(env, request);
+  }
+  if (url.pathname === "/api/requests/new" && request.method === "POST") {
+    if (!allow(user, "requests", "write")) return deny(request);
+    return createStaffRequest(request, env, user);
   }
   if (url.pathname.startsWith("/api/requests/") && url.pathname.endsWith("/decide") && request.method === "POST") {
     if (!allow(user, "requests", "write")) return deny(request);
@@ -937,7 +990,14 @@ function xmlEscape(value) {
   return text.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 }
 
-async function audit(env, user, action, entity, entityId, detail, request, isSample = 0) {
+function sampleFromActor(user, parent) {
+  if (parent && (parent.is_sample === 1 || parent.is_sample === true)) return 1;
+  if (user && (user.is_sample === 1 || user.is_sample === true)) return 1;
+  return 0;
+}
+
+async function audit(env, user, action, entity, entityId, detail, request, isSample) {
+  const sample = isSample === undefined || isSample === null ? sampleFromActor(user) : (isSample ? 1 : 0);
   try {
     await env.DB.prepare(
       `INSERT INTO audit_log (id, at, user_id, role, action, entity, entity_id, detail, ip, is_sample)
@@ -952,7 +1012,7 @@ async function audit(env, user, action, entity, entityId, detail, request, isSam
       entityId || null,
       detail ? String(detail).slice(0, 2000) : null,
       request ? clientIp(request) : null,
-      isSample ? 1 : 0
+      sample
     ).run();
   } catch (err) {
     console.error(JSON.stringify({ level: "error", message: "audit_failed", error: String(err && err.message ? err.message : err) }));
@@ -960,7 +1020,8 @@ async function audit(env, user, action, entity, entityId, detail, request, isSam
   }
 }
 
-function auditStmt(env, user, action, entity, entityId, detail, request, isSample = 0) {
+function auditStmt(env, user, action, entity, entityId, detail, request, isSample) {
+  const sample = isSample === undefined || isSample === null ? sampleFromActor(user) : (isSample ? 1 : 0);
   return env.DB.prepare(
     `INSERT INTO audit_log (id, at, user_id, role, action, entity, entity_id, detail, ip, is_sample)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -974,7 +1035,7 @@ function auditStmt(env, user, action, entity, entityId, detail, request, isSampl
     entityId || null,
     detail ? String(detail).slice(0, 2000) : null,
     request ? clientIp(request) : null,
-    isSample ? 1 : 0
+    sample
   );
 }
 
@@ -1190,10 +1251,13 @@ async function createPublicRequest(request, env) {
     return json({ error: "Too many requests are already waiting for that date. Please pick another day or try again later." }, 429, request);
   }
   const id = randomId();
-  await env.DB.prepare(
-    `INSERT INTO requests (id, date, name, contact, type, pax, venue, notes, package, status, created_at, is_sample)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0)`
-  ).bind(id, date.value, name.value, contact.value, type.value, pax.value, venue.value, notes.value, pkg.value, isoNow()).run();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO requests (id, date, name, contact, type, pax, venue, notes, package, status, created_at, is_sample)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0)`
+    ).bind(id, date.value, name.value, contact.value, type.value, pax.value, venue.value, notes.value, pkg.value, isoNow()),
+    auditStmt(env, { id: "public", role: "public" }, "create", "requests", id, `${date.value} ${venue.value} ${type.value}`, request, 0)
+  ]);
   return json({ ok: true, id, date: date.value, status: "pending" }, 201, request);
 }
 
@@ -1243,6 +1307,7 @@ async function setupOwner(request, env) {
     ).bind(id, email.value, name.value, hash, salt, now, now, PASSWORD_ALGO).run();
   }
   const session = await createSession(env, id);
+  try { await audit(env, { id, role: "owner" }, "setup", "users", id, "Owner account created", request, 0); } catch (_) {}
   return json({
     ok: true,
     user: { id, email: email.value, name: name.value, role: "owner", title: "Owner", mustChangePassword: false },
@@ -1284,8 +1349,10 @@ async function login(request, env) {
     const acctFail = await bumpFailLimit(env, acctKey, LOGIN_MAX_PER_ACCOUNT);
     const nextNeed = ipFail.count >= LOGIN_TURNSTILE_AFTER || acctFail.count >= LOGIN_TURNSTILE_AFTER;
     if (ipFail.blocked || acctFail.blocked) {
+      try { await audit(env, user || null, "login_failed", "users", user && user.id, "locked", request, sampleFromActor(user)); } catch (_) {}
       return json({ error: "Too many tries. Please wait 15 minutes and try again.", code: "locked" }, 429, request);
     }
+    try { await audit(env, user || null, "login_failed", "users", user && user.id, email ? "email provided" : "blank email", request, sampleFromActor(user)); } catch (_) {}
     return json({
       error: "Email or password is not right.",
       code: nextNeed ? "turnstile_required" : "auth_failed"
@@ -1304,6 +1371,7 @@ async function login(request, env) {
     }
   }
   const session = await createSession(env, user.id);
+  try { await audit(env, user, "login", "sessions", user.id, "Signed in", request, sampleFromActor(user)); } catch (_) {}
   return json({ ok: true, user: publicUser(user), token: session.token, expiresAt: session.expiresAt }, 200, request);
 }
 
@@ -1519,6 +1587,34 @@ async function listRequests(env, request) {
   return json({ requests: results || [] }, 200, request);
 }
 
+async function createStaffRequest(request, env, user) {
+  if (!originAllowed(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
+  const body = await readJson(request);
+  if (!body) return json({ error: "Please complete the form." }, 400, request);
+  const date = vDate(body.date, { label: "the date" });
+  const name = vStr(body.name, { label: "the name", max: 80 });
+  const contact = vContact(body.contact || "09170000000");
+  const type = vOneOf(String(body.type || "Other").trim(), EVENT_TYPES, "event type");
+  const venue = vOneOf(String(body.venue || "Any").trim(), VENUES, "venue");
+  const pax = vInt(body.pax, { label: "the number of guests", min: 1, max: 500, required: false });
+  const notes = vStr(body.notes, { label: "notes", required: false, max: 500 });
+  const pkg = vStr(body.package, { label: "package", required: false, max: 80 });
+  for (const field of [date, name, contact, type, venue, pax, notes, pkg]) {
+    if (field.error) return json({ error: field.error }, 400, request);
+  }
+  const id = randomId();
+  const sample = sampleFromActor(user);
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO requests (id, date, name, contact, type, pax, venue, notes, package, status, created_at, is_sample)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+    ).bind(id, date.value, name.value, contact.value, type.value, pax.value || 50, venue.value, notes.value, pkg.value, isoNow(), sample),
+    auditStmt(env, user, "create", "requests", id, `${date.value} ${venue.value}`, request, sample)
+  ]);
+  const row = await env.DB.prepare("SELECT * FROM requests WHERE id = ?").bind(id).first();
+  return json({ request: row }, 201, request);
+}
+
 async function decideRequest(id, request, env, user) {
   if (!originAllowed(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   const body = await readJson(request);
@@ -1545,14 +1641,28 @@ async function decideRequest(id, request, env, user) {
           `INSERT INTO events (id, date, client, title, type, package, pax, venue, status, fee, deposit, from_request, created_at, created_by, is_sample)
            SELECT ?, date, name, COALESCE(NULLIF(type, ''), 'Booking request'), type, COALESCE(package, 'From booking request'), pax, COALESCE(NULLIF(venue, ''), 'Any'), 'Confirmed', NULL, NULL, id, ?, ?, IFNULL(is_sample, 0)
            FROM requests
-           WHERE id = ? AND status = 'pending'`
+           WHERE id = ? AND status = 'pending'
+             AND NOT EXISTS (
+               SELECT 1 FROM events e
+               WHERE e.date = requests.date
+                 AND e.status IN ('Confirmed', 'Tentative', 'Setup', 'Booked')
+                 AND IFNULL(e.is_sample, 0) = IFNULL(requests.is_sample, 0)
+                 AND (
+                   CASE
+                     WHEN IFNULL(requests.venue, '') IN ('', 'Any') THEN 1
+                     WHEN e.venue = requests.venue OR e.venue = 'Any' THEN 1
+                     ELSE 0
+                   END
+                 ) = 1
+             )`
         ).bind(eventId, now, user.id, id),
         env.DB.prepare(
-          "UPDATE requests SET status = 'approved', decided_at = ?, decided_by = ?, decline_reason = NULL WHERE id = ? AND status = 'pending'"
+          `UPDATE requests SET status = 'approved', decided_at = ?, decided_by = ?, decline_reason = NULL
+           WHERE id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM events e WHERE e.from_request = requests.id)`
         ).bind(now, user.id, id)
       ]);
       const inserted = results[0] && results[0].meta && results[0].meta.changes;
-      if (inserted !== 1) return json({ error: "This request is no longer pending." }, 409, request);
+      if (inserted !== 1) return json({ error: "That date and venue are already held by another event, or this request is no longer pending." }, 409, request);
       try {
         await audit(env, user, "approve", "requests", id, `Created event ${eventId}`, request, req.is_sample);
       } catch (err) {
@@ -1581,7 +1691,7 @@ async function decideRequest(id, request, env, user) {
 
 async function listDirectory(env, request) {
   const { results } = await env.DB.prepare(
-    "SELECT id, name, role, title, is_sample FROM users WHERE IFNULL(is_active, 1) = 1 ORDER BY name ASC"
+    "SELECT id, name, role, title, is_sample FROM users WHERE IFNULL(is_active, 1) = 1 AND role != 'owner' ORDER BY name ASC"
   ).all();
   return json({ people: results || [] }, 200, request);
 }
@@ -1814,18 +1924,19 @@ async function clock(env, request, user) {
   const open = await env.DB.prepare(
     "SELECT * FROM attendance WHERE staff_id = ? AND date = ? AND time_out IS NULL ORDER BY time_in DESC LIMIT 1"
   ).bind(user.id, today).first();
+  const sample = sampleFromActor(user, open);
   if (open) {
     await env.DB.batch([
       env.DB.prepare("UPDATE attendance SET time_out = ? WHERE id = ?").bind(time, open.id),
-      auditStmt(env, user, "clock_out", "attendance", open.id, `${today} ${time}`, request, open.is_sample)
+      auditStmt(env, user, "clock_out", "attendance", open.id, `${today} ${time}`, request, sample)
     ]);
   } else {
     const punchId = randomId();
     await env.DB.batch([
       env.DB.prepare(
-        "INSERT INTO attendance (id, staff_id, date, time_in, time_out, is_sample) VALUES (?, ?, ?, ?, NULL, 0)"
-      ).bind(punchId, user.id, today, time),
-      auditStmt(env, user, "clock_in", "attendance", punchId, `${today} ${time}`, request)
+        "INSERT INTO attendance (id, staff_id, date, time_in, time_out, is_sample) VALUES (?, ?, ?, ?, NULL, ?)"
+      ).bind(punchId, user.id, today, time, sample),
+      auditStmt(env, user, "clock_in", "attendance", punchId, `${today} ${time}`, request, sample)
     ]);
   }
   const { results } = await env.DB.prepare(
@@ -1900,6 +2011,7 @@ async function createAnnouncement(request, env, user) {
 }
 
 async function listFinances(env, request) {
+  const demoMode = await getDemoMode(env);
   const { results } = await env.DB.prepare(
     `SELECT event_id AS id, date, client, title, status, is_sample,
             contract_total, collected, balance
@@ -1908,19 +2020,20 @@ async function listFinances(env, request) {
   const events = results || [];
   const real = events.filter((event) => !event.is_sample);
   const sample = events.filter((event) => event.is_sample);
+  const visible = demoMode ? events : real;
   const sum = (rows) => ({
     fees: rows.reduce((total, event) => total + (event.contract_total || 0), 0),
     collected: rows.reduce((total, event) => total + (event.collected || 0), 0),
     deposits: rows.reduce((total, event) => total + (event.collected || 0), 0),
     balance: rows.reduce((total, event) => total + (event.balance || 0), 0)
   });
-  const realSum = sum(real);
-  const sampleSum = sum(sample);
   return json({
-    events,
-    totals: realSum,
-    sampleTotals: sampleSum,
-    includesSample: sample.length > 0
+    events: visible,
+    totals: sum(visible),
+    sampleTotals: sum(sample),
+    includesSample: demoMode && sample.length > 0,
+    demoMode,
+    hasSample: sample.length > 0
   }, 200, request);
 }
 
@@ -2069,9 +2182,11 @@ async function cleanupSmoke(request, env, user) {
     events: { table: "events", idCol: "id" },
     payments: { table: "payments", idCol: "id" },
     purchase_orders: { table: "purchase_orders", idCol: "id" },
-    po_lines: { table: "po_lines", idCol: "po_id" }
+    po_lines: { table: "po_lines", idCol: "po_id" },
+    requests: { table: "requests", idCol: "id" },
+    attendance: { table: "attendance", idCol: "id" }
   };
-  const deleteOrder = ["quote_lines", "hk_template_items", "inventory_moves", "po_lines", "payments", "contracts", "events", "quotes", "purchase_orders", "expenses", "inventory_items", "leave_requests", "leads", "clients", "areas", "hk_templates"];
+  const deleteOrder = ["quote_lines", "hk_template_items", "inventory_moves", "po_lines", "payments", "contracts", "events", "quotes", "purchase_orders", "expenses", "inventory_items", "leave_requests", "leads", "clients", "areas", "hk_templates", "requests", "attendance"];
   const records = body.records.slice(0, 80).slice().sort((a, b) => {
     const ai = deleteOrder.indexOf(a && a.table);
     const bi = deleteOrder.indexOf(b && b.table);
@@ -2095,6 +2210,10 @@ async function cleanupSmoke(request, env, user) {
         const parent = await env.DB.prepare(parentSql).bind(id).first();
         if (parent && JSON.stringify(parent).includes(runId)) tagged = rows.length ? rows : [parent];
       }
+    }
+    if (!tagged.length && spec.table === "attendance") {
+      const punch = rows[0] || await env.DB.prepare("SELECT * FROM attendance WHERE id = ? AND IFNULL(is_sample,0)=1").bind(id).first();
+      if (punch) tagged = [punch];
     }
     if (!tagged.length) continue;
     const result = await env.DB.prepare(`DELETE FROM ${spec.table} WHERE ${spec.idCol} = ? AND IFNULL(is_sample,0)=1`).bind(id).run();
@@ -2120,7 +2239,8 @@ async function sampleStatus(env, request) {
     counts[table] = Number(row && row.n) || 0;
     if (counts[table]) hasSample = true;
   }
-  return json({ hasSample, counts }, 200, request);
+  const demoMode = hasSample ? await getDemoMode(env) : false;
+  return json({ hasSample, demoMode, counts }, 200, request);
 }
 
 // Hardcoded table/column pairs only. Real rows that point at sample rows block removal.
@@ -2254,6 +2374,7 @@ async function removeSample(request, env, user) {
   ]);
   const failed = results.some((row) => row && row.success === false);
   if (failed) return json({ error: "Could not remove all sample data. Please try again." }, 500, request);
+  await setDemoMode(env, false, user);
   return sampleStatus(env, request);
 }
 
@@ -2268,14 +2389,7 @@ async function listAudit(env, request) {
 
 
 async function exportIncludesSample(env) {
-  const row = await env.DB.prepare(
-    `SELECT 1 AS ok FROM events WHERE IFNULL(is_sample,0)=1
-     UNION SELECT 1 FROM payments WHERE IFNULL(is_sample,0)=1
-     UNION SELECT 1 FROM expenses WHERE IFNULL(is_sample,0)=1
-     UNION SELECT 1 FROM quotes WHERE IFNULL(is_sample,0)=1
-     LIMIT 1`
-  ).first();
-  return Boolean(row);
+  return getDemoMode(env);
 }
 
 function tagExportRows(rows) {
@@ -2398,7 +2512,7 @@ async function exportReport(url, env, request, user) {
     rows = tagExportRows(rows);
     columns = columns.concat({ key: "is_sample", label: "Sample" });
   }
-  await audit(env, user, "export", table, null, `${format} download`, request);
+  await audit(env, user, "export", table, null, `${format} download`, request, sampleFromActor(user));
   if (format === "xlsx") {
     return fileResponse(toXlsx(rows, columns, table), `${table}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", request);
   }
