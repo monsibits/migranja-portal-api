@@ -309,15 +309,16 @@ const ALLOW_WHILE_PASSWORD_CHANGE = new Set([
 
 async function hasSampleRows(env) {
   const row = await env.DB.prepare(
-    `SELECT 1 AS ok FROM events WHERE IFNULL(is_sample,0)=1
-     UNION SELECT 1 FROM payments WHERE IFNULL(is_sample,0)=1
-     UNION SELECT 1 FROM expenses WHERE IFNULL(is_sample,0)=1
-     UNION SELECT 1 FROM tasks WHERE IFNULL(is_sample,0)=1
-     UNION SELECT 1 FROM inventory_items WHERE IFNULL(is_sample,0)=1
-     UNION SELECT 1 FROM users WHERE IFNULL(is_sample,0)=1
-     LIMIT 1`
+    `SELECT CASE WHEN
+        EXISTS (SELECT 1 FROM events WHERE IFNULL(is_sample,0)=1)
+        OR EXISTS (SELECT 1 FROM payments WHERE IFNULL(is_sample,0)=1)
+        OR EXISTS (SELECT 1 FROM expenses WHERE IFNULL(is_sample,0)=1)
+        OR EXISTS (SELECT 1 FROM tasks WHERE IFNULL(is_sample,0)=1)
+        OR EXISTS (SELECT 1 FROM inventory_items WHERE IFNULL(is_sample,0)=1)
+        OR EXISTS (SELECT 1 FROM users WHERE IFNULL(is_sample,0)=1)
+      THEN 1 ELSE 0 END AS ok`
   ).first();
-  return Boolean(row);
+  return Boolean(row && row.ok);
 }
 
 async function ensureAppSettings(env) {
