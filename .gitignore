@@ -4,3 +4,6 @@ node_modules/
 .wrangler/
 *.log
 .sample-staff
+backups/
+.export-token
+.sheets-setup
