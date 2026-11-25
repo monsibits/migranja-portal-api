@@ -212,6 +212,43 @@ if (ownerToken) {
     if (contractId) created.push({ table: "contracts", id: contractId });
     if (eventId) created.push({ table: "events", id: eventId });
   }
+
+  const raceItem = await request("/api/inventory/items", { method: "POST", token: ownerToken, body: {
+    name: `SAMPLE Smoke Receive ${stamp}`,
+    category: "supplies",
+    unit: "pc",
+    qty_on_hand: 0,
+    reorder_level: 0,
+    notes: stamp
+  }});
+  check("create item for PO receive race", raceItem.status === 201, `HTTP ${raceItem.status}`);
+  const itemId = raceItem.data && raceItem.data.item && raceItem.data.item.id;
+  if (itemId) {
+    created.push({ table: "inventory_moves", id: itemId });
+    created.push({ table: "inventory_items", id: itemId });
+    const po = await request("/api/purchase-orders", { method: "POST", token: ownerToken, body: {
+      notes: stamp,
+      status: "ordered",
+      lines: [{ item_id: itemId, label: "Smoke receive", qty: 5, unit_cost: 10 }]
+    }});
+    check("create PO for receive race", po.status === 201, `HTTP ${po.status}`);
+    const poId = po.data && po.data.order && po.data.order.id;
+    if (poId) {
+      created.push({ table: "po_lines", id: poId });
+      created.push({ table: "purchase_orders", id: poId });
+      const receives = await Promise.all(Array.from({ length: 6 }, () =>
+        request(`/api/purchase-orders/${poId}`, { method: "PATCH", token: ownerToken, body: { status: "received" } })
+      ));
+      const ok = receives.filter((row) => row.status === 200);
+      const conflict = receives.filter((row) => row.status === 409);
+      check("parallel PO receive is atomic", ok.length === 1 && conflict.length === 5, `ok=${ok.length} 409=${conflict.length} other=${receives.filter((row) => row.status !== 200 && row.status !== 409).map((row) => row.status).join(",")}`);
+      const itemsAfter = await request("/api/inventory/items", { token: ownerToken });
+      const row = ((itemsAfter.data && itemsAfter.data.items) || []).find((item) => item.id === itemId);
+      check("PO receive added stock once", row && Number(row.qty_on_hand) === 5, `qty=${row && row.qty_on_hand}`);
+      const unrecv = await request(`/api/purchase-orders/${poId}`, { method: "PATCH", token: ownerToken, body: { status: "ordered" } });
+      check("un-receiving a PO is blocked", unrecv.status === 400, `HTTP ${unrecv.status}`);
+    }
+  }
 }
 
 if (ownerToken && created.length) {

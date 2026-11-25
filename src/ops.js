@@ -757,13 +757,23 @@ async function createLead(request, env, user) {
   for (const field of [name, contact, source, status, notes, venue, type, eventDate, pax]) {
     if (field.error) return json({ error: field.error }, 400, request);
   }
+  let clientId = body.client_id || null;
+  let assignedTo = body.assigned_to || null;
+  if (clientId) {
+    const client = await env.DB.prepare("SELECT id FROM clients WHERE id = ?").bind(clientId).first();
+    if (!client) return json({ error: "Please pick a valid client." }, 400, request);
+  }
+  if (assignedTo) {
+    const person = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(assignedTo).first();
+    if (!person) return json({ error: "Please pick a valid assignee." }, 400, request);
+  }
   const id = randomId();
   const sample = actorSample(user);
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO leads (id, name, contact, source, status, notes, request_id, client_id, assigned_to, event_date, venue, pax, type, created_at, created_by, is_sample)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(id, name.value, contact.value, source.value, status.value, notes.value, body.request_id || null, body.client_id || null, body.assigned_to || null, eventDate.value || null, venue.value, pax.value, type.value, isoNow(), user.id, sample),
+    ).bind(id, name.value, contact.value, source.value, status.value, notes.value, body.request_id || null, clientId, assignedTo, eventDate.value || null, venue.value, pax.value, type.value, isoNow(), user.id, sample),
     auditStmt(env, user, "create", "leads", id, name.value, request, sample)
   ]);
   return json({ lead: await env.DB.prepare("SELECT * FROM leads WHERE id = ?").bind(id).first() }, 201, request);
@@ -784,13 +794,31 @@ async function patchLead(id, request, env, user) {
   }
   if (body.contact !== undefined) fields.contact = String(body.contact || "").trim();
   if (body.source !== undefined) fields.source = String(body.source || "").trim();
-  if (body.notes !== undefined) fields.notes = String(body.notes || "").trim();
+  if (body.notes !== undefined) {
+    const notes = vStr(body.notes, { label: "notes", required: false, max: 2000 });
+    if (notes.error) return json({ error: notes.error }, 400, request);
+    fields.notes = notes.value;
+  }
   if (body.venue !== undefined) fields.venue = String(body.venue || "").trim();
   if (body.type !== undefined) fields.type = String(body.type || "").trim();
   if (body.event_date !== undefined) fields.event_date = body.event_date || null;
   if (body.pax !== undefined) fields.pax = body.pax === "" || body.pax === null ? null : Number(body.pax);
-  if (body.client_id !== undefined) fields.client_id = body.client_id || null;
-  if (body.assigned_to !== undefined) fields.assigned_to = body.assigned_to || null;
+  if (body.client_id !== undefined) {
+    if (!body.client_id) fields.client_id = null;
+    else {
+      const client = await env.DB.prepare("SELECT id FROM clients WHERE id = ?").bind(body.client_id).first();
+      if (!client) return json({ error: "Please pick a valid client." }, 400, request);
+      fields.client_id = body.client_id;
+    }
+  }
+  if (body.assigned_to !== undefined) {
+    if (!body.assigned_to) fields.assigned_to = null;
+    else {
+      const person = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(body.assigned_to).first();
+      if (!person) return json({ error: "Please pick a valid assignee." }, 400, request);
+      fields.assigned_to = body.assigned_to;
+    }
+  }
   if (body.status !== undefined || body.stage !== undefined) {
     const status = vOneOf(String(body.status || body.stage), LEAD_STAGES, "stage");
     if (status.error) return json({ error: status.error }, 400, request);
@@ -1169,7 +1197,7 @@ async function createPayment(request, env, user) {
   if (missing) return missing;
   const amount = vInt(body && body.amount, { label: "the amount", min: 1, max: 100000000 });
   const kind = vOneOf(String(body && body.kind || "downpayment"), PAYMENT_KINDS, "payment kind");
-  const method = vOneOf(String(body && body.method || "cash"), PAYMENT_METHODS, "payment method");
+  const method = vOneOf(String(body && body.method || "cash").trim().toLowerCase(), PAYMENT_METHODS, "payment method");
   const received = vDate(body && body.received_at || todayISO(), { label: "the date received" });
   const notes = vStr(body && body.notes, { label: "notes", required: false, max: 1000 });
   for (const field of [amount, kind, method, received, notes]) {
@@ -1955,6 +1983,8 @@ async function createPO(request, env, user) {
   const hasMoney = body.total !== undefined && body.total !== null && body.total !== ""
     || lines.some((line) => line && (line.unit_cost !== undefined && line.unit_cost !== null && line.unit_cost !== "" || line.amount !== undefined && line.amount !== null && line.amount !== ""));
   if (hasMoney && !isOwner(user)) return denyMoney(request);
+  const notes = vStr(body && body.notes, { label: "notes", required: false, max: 2000 });
+  if (notes.error) return json({ error: notes.error }, 400, request);
   const total = isOwner(user) ? lines.reduce((sum, line) => sum + (Number(line.qty) || 0) * (Number(line.unit_cost) || 0), 0) : 0;
   const id = randomId();
   const sample = actorSample(user);
@@ -1963,7 +1993,7 @@ async function createPO(request, env, user) {
       env.DB.prepare(
         `INSERT INTO purchase_orders (id, number, supplier_id, status, ordered_at, expected_at, total, notes, created_at, created_by, is_sample, total_cents)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).bind(id, number, body.supplier_id || null, body.status && PO_STATUSES.includes(body.status) ? body.status : "draft", body.ordered_at || todayISO(), body.expected_at || null, total, body.notes || "", isoNow(), user.id, sample, centsFromPesos(total))
+      ).bind(id, number, body.supplier_id || null, body.status && PO_STATUSES.includes(body.status) ? body.status : "draft", body.ordered_at || todayISO(), body.expected_at || null, total, notes.value, isoNow(), user.id, sample, centsFromPesos(total))
     ];
     lines.forEach((line) => {
       const qty = Number(line.qty) || 1;
@@ -1979,6 +2009,11 @@ async function createPO(request, env, user) {
   });
 }
 
+async function presentPO(row, user) {
+  if (!row) return row;
+  return isOwner(user) ? row : stripMoneyFields(row, ["total", "total_cents"]);
+}
+
 async function patchPO(id, request, env, user) {
   if (!requireOrigin(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   if (user.role === "staff") return deny(request);
@@ -1989,25 +2024,55 @@ async function patchPO(id, request, env, user) {
   if (missing) return missing;
   const status = body.status ? vOneOf(String(body.status), PO_STATUSES, "status") : { value: existing.status };
   if (status.error) return json({ error: status.error }, 400, request);
-  const statements = [
-    env.DB.prepare("UPDATE purchase_orders SET status = ?, notes = ? WHERE id = ?").bind(status.value, body.notes !== undefined ? String(body.notes) : existing.notes, id)
-  ];
+  const notes = body.notes !== undefined ? vStr(body.notes, { label: "notes", required: false, max: 2000 }) : { value: existing.notes };
+  if (notes.error) return json({ error: notes.error }, 400, request);
+  if (existing.status === "received" && status.value !== "received") {
+    return json({ error: "A received purchase order cannot be changed back. The stock has already been recorded." }, 400, request);
+  }
+  const now = isoNow();
+  const present = async () => presentPO(await env.DB.prepare("SELECT * FROM purchase_orders WHERE id = ?").bind(id).first(), user);
+
   if (status.value === "received" && existing.status !== "received") {
+    const claimed = await env.DB.prepare(
+      "UPDATE purchase_orders SET status = 'received', notes = ? WHERE id = ? AND status != 'received'"
+    ).bind(notes.value, id).run();
+    if (!claimed || !claimed.meta || claimed.meta.changes !== 1) {
+      return json({ error: "This purchase order was already received." }, 409, request);
+    }
     const lines = await listBy(env, request, "SELECT * FROM po_lines WHERE po_id = ? AND item_id IS NOT NULL", [id]);
+    const statements = [];
     for (const line of lines) {
-      const item = await env.DB.prepare("SELECT * FROM inventory_items WHERE id = ?").bind(line.item_id).first();
-      if (!item) continue;
       const qty = Number(line.qty) || 0;
+      const marker = `PO ${existing.number}`;
       statements.push(env.DB.prepare(
         `INSERT INTO inventory_moves (id, item_id, kind, qty, signed_qty, event_id, notes, created_at, created_by, is_sample)
-         VALUES (?, ?, 'receive', ?, ?, NULL, ?, ?, ?, ?)`
-      ).bind(randomId(), item.id, qty, qty, `PO ${existing.number}`, isoNow(), user.id, actorSample(user, existing)));
-      statements.push(env.DB.prepare("UPDATE inventory_items SET qty_on_hand = qty_on_hand + ?, updated_at = ? WHERE id = ?").bind(qty, isoNow(), item.id));
+         SELECT ?, l.item_id, 'receive', l.qty, l.qty, NULL, ?, ?, ?, IFNULL(p.is_sample, 0)
+         FROM po_lines l
+         JOIN purchase_orders p ON p.id = l.po_id
+         WHERE l.id = ? AND p.id = ? AND p.status = 'received'
+           AND NOT EXISTS (
+             SELECT 1 FROM inventory_moves m
+             WHERE m.item_id = l.item_id AND m.kind = 'receive' AND m.notes = ?
+           )`
+      ).bind(randomId(), marker, now, user.id, line.id, id, marker));
+      statements.push(env.DB.prepare(
+        `UPDATE inventory_items SET qty_on_hand = qty_on_hand + ?, updated_at = ?
+         WHERE id = ? AND EXISTS (
+           SELECT 1 FROM inventory_moves m
+           WHERE m.item_id = inventory_items.id AND m.kind = 'receive' AND m.notes = ? AND m.created_at = ?
+         )`
+      ).bind(qty, now, line.item_id, marker, now));
     }
+    statements.push(auditStmt(env, user, "update", "purchase_orders", id, "received", request, existing.is_sample));
+    if (statements.length) await env.DB.batch(statements);
+    return json({ order: await present() }, 200, request);
   }
-  statements.push(auditStmt(env, user, "update", "purchase_orders", id, status.value, request, existing.is_sample));
-  await env.DB.batch(statements);
-  return json({ order: await env.DB.prepare("SELECT * FROM purchase_orders WHERE id = ?").bind(id).first() }, 200, request);
+
+  await env.DB.batch([
+    env.DB.prepare("UPDATE purchase_orders SET status = ?, notes = ? WHERE id = ?").bind(status.value, notes.value, id),
+    auditStmt(env, user, "update", "purchase_orders", id, status.value, request, existing.is_sample)
+  ]);
+  return json({ order: await present() }, 200, request);
 }
 
 
@@ -2505,15 +2570,41 @@ async function patchLeave(id, request, env, user) {
   const body = await readJson(request);
   const missing = requireBody(body, request);
   if (missing) return missing;
-  if (user.role === "staff") {
-    if (existing.user_id !== user.id) return deny(request);
-    if (String(body.status) !== "cancelled") return json({ error: "You can only cancel your own leave request." }, 400, request);
-  }
   const status = vOneOf(String(body.status || existing.status), LEAVE_STATUSES, "status");
   if (status.error) return json({ error: status.error }, 400, request);
+  const next = status.value;
+  const current = existing.status;
+  const allowed = {
+    pending: ["approved", "declined", "cancelled"],
+    approved: ["cancelled"],
+    declined: [],
+    cancelled: []
+  };
+  if (next !== current && !(allowed[current] || []).includes(next)) {
+    return json({ error: "This leave request is already decided and cannot be changed." }, 400, request);
+  }
+  const deciding = next === "approved" || next === "declined";
+  if (user.role === "staff") {
+    if (existing.user_id !== user.id) return deny(request);
+    if (next !== "cancelled") return json({ error: "You can only cancel your own leave request." }, 400, request);
+  } else if (deciding) {
+    if (existing.user_id === user.id) {
+      return json({ error: "You cannot approve or decline your own leave request." }, 400, request);
+    }
+    const subject = await env.DB.prepare("SELECT id, role FROM users WHERE id = ?").bind(existing.user_id).first();
+    const subjectRole = subject && subject.role;
+    if (subjectRole === "admin" && user.role !== "owner") {
+      return json({ error: "Only the owner can decide an admin's leave." }, 403, request);
+    }
+    if (subjectRole === "owner" && user.role !== "owner") {
+      return json({ error: "Only the owner can decide an owner's leave." }, 403, request);
+    }
+  } else if (user.role !== "owner" && user.role !== "admin" && existing.user_id !== user.id) {
+    return deny(request);
+  }
   await env.DB.batch([
-    env.DB.prepare("UPDATE leave_requests SET status = ?, decided_by = ?, decided_at = ? WHERE id = ?").bind(status.value, user.id, isoNow(), id),
-    auditStmt(env, user, "update", "leave_requests", id, status.value, request, existing.is_sample)
+    env.DB.prepare("UPDATE leave_requests SET status = ?, decided_by = ?, decided_at = ? WHERE id = ?").bind(next, user.id, isoNow(), id),
+    auditStmt(env, user, "update", "leave_requests", id, `${current}→${next}`, request, existing.is_sample)
   ]);
   return json({ request: await env.DB.prepare("SELECT * FROM leave_requests WHERE id = ?").bind(id).first() }, 200, request);
 }

@@ -2067,9 +2067,11 @@ async function cleanupSmoke(request, env, user) {
     quote_lines: { table: "quote_lines", idCol: "quote_id" },
     contracts: { table: "contracts", idCol: "id" },
     events: { table: "events", idCol: "id" },
-    payments: { table: "payments", idCol: "id" }
+    payments: { table: "payments", idCol: "id" },
+    purchase_orders: { table: "purchase_orders", idCol: "id" },
+    po_lines: { table: "po_lines", idCol: "po_id" }
   };
-  const deleteOrder = ["quote_lines", "hk_template_items", "inventory_moves", "payments", "contracts", "events", "quotes", "expenses", "inventory_items", "leave_requests", "leads", "clients", "areas", "hk_templates"];
+  const deleteOrder = ["quote_lines", "hk_template_items", "inventory_moves", "po_lines", "payments", "contracts", "events", "quotes", "purchase_orders", "expenses", "inventory_items", "leave_requests", "leads", "clients", "areas", "hk_templates"];
   const records = body.records.slice(0, 80).slice().sort((a, b) => {
     const ai = deleteOrder.indexOf(a && a.table);
     const bi = deleteOrder.indexOf(b && b.table);
@@ -2088,6 +2090,7 @@ async function cleanupSmoke(request, env, user) {
       if (spec.table === "inventory_moves") parentSql = "SELECT * FROM inventory_items WHERE id = ? AND IFNULL(is_sample,0)=1";
       else if (spec.table === "hk_template_items") parentSql = "SELECT * FROM hk_templates WHERE id = ? AND IFNULL(is_sample,0)=1";
       else if (spec.table === "quote_lines") parentSql = "SELECT * FROM quotes WHERE id = ? AND IFNULL(is_sample,0)=1";
+      else if (spec.table === "po_lines") parentSql = "SELECT * FROM purchase_orders WHERE id = ? AND IFNULL(is_sample,0)=1";
       if (parentSql) {
         const parent = await env.DB.prepare(parentSql).bind(id).first();
         if (parent && JSON.stringify(parent).includes(runId)) tagged = rows.length ? rows : [parent];
@@ -2304,9 +2307,14 @@ async function exportReport(url, env, request, user) {
   let rows = [];
   let columns = [];
   if (table === "events") {
+    const eventSample = sampleFilter.replace("is_sample", "e.is_sample");
     const sql = user.role === "owner"
-      ? `SELECT date, client, title, type, package, pax, venue, status, fee, deposit, is_sample FROM events WHERE 1=1${sampleFilter} ORDER BY date`
-      : `SELECT date, client, title, type, package, pax, venue, status, is_sample FROM events WHERE 1=1${sampleFilter} ORDER BY date`;
+      ? `SELECT e.date, e.client, e.title, e.type, e.package, e.pax, e.venue, e.status,
+                IFNULL(b.contract_total, 0) AS contract_total, IFNULL(b.collected, 0) AS paid, IFNULL(b.balance, 0) AS balance, e.is_sample
+         FROM events e
+         LEFT JOIN v_event_balance b ON b.event_id = e.id
+         WHERE 1=1${eventSample} ORDER BY e.date`
+      : `SELECT e.date, e.client, e.title, e.type, e.package, e.pax, e.venue, e.status, e.is_sample FROM events e WHERE 1=1${eventSample} ORDER BY e.date`;
     rows = (await env.DB.prepare(sql).all()).results || [];
     columns = [
       { key: "date", label: "Date" }, { key: "client", label: "Client" }, { key: "title", label: "Title" },
@@ -2314,7 +2322,7 @@ async function exportReport(url, env, request, user) {
       { key: "venue", label: "Venue" }, { key: "status", label: "Status" }
     ];
     if (user.role === "owner") {
-      columns.push({ key: "fee", label: "Fee" }, { key: "deposit", label: "Deposit" });
+      columns.push({ key: "contract_total", label: "Contract total" }, { key: "paid", label: "Paid" }, { key: "balance", label: "Balance" });
     }
   } else if (table === "requests") {
     rows = (await env.DB.prepare(
