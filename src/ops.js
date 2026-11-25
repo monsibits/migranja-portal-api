@@ -474,8 +474,9 @@ function parseItemLabels(raw) {
 
 async function dashboard(env, request, user) {
   const today = todayISO();
-  const now = new Date(`${today}T00:00:00+08:00`);
-  const { from, to, days } = monthRange(now.getFullYear(), now.getMonth() + 1);
+  const year = Number(today.slice(0, 4));
+  const month = Number(today.slice(5, 7));
+  const { from, to, days } = monthRange(year, month);
   const staff = user.role === "staff";
 
   const events = (await env.DB.prepare("SELECT id, date, client, title, status, fee, deposit, contract_total, is_sample FROM events").all()).results || [];
@@ -530,9 +531,10 @@ async function dashboard(env, request, user) {
 
   const months = [];
   for (let i = 11; i >= 0; i -= 1) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-    months.push(key);
+    const n = year * 12 + (month - 1) - i;
+    const y = Math.floor(n / 12);
+    const m = (n % 12) + 1;
+    months.push(`${y}-${String(m).padStart(2, "0")}`);
   }
   const chart = months.map((key) => {
     const realRev = payments.filter((p) => !p.is_sample && !p.voided_at && monthKey(p.received_at) === key).reduce((s, p) => s + (p.kind === "refund" ? -p.amount : p.amount || 0), 0);
@@ -565,7 +567,7 @@ async function dashboard(env, request, user) {
     hasSample: events.some((row) => row.is_sample) || payments.some((row) => row.is_sample),
     chart: isOwner(user) ? chart : months.map((key) => ({ month: key })),
     upcoming,
-    lowStock: stock.filter((row) => Number(row.qty_on_hand || 0) <= Number(row.reorder_level || 0)).slice(0, 8)
+    lowStock: stock.filter((row) => Number(row.qty_on_hand || 0) <= Number(row.reorder_level || 0)).slice(0, 8).map((row) => presentItem(row, user))
   }, 200, request);
 }
 
@@ -803,9 +805,26 @@ async function patchLead(id, request, env, user) {
 
 
 function quoteTotals(lines, discount) {
-  const subtotal = (lines || []).reduce((sum, line) => sum + (Number(line.amount) || (Number(line.qty) || 0) * (Number(line.unit_price) || 0)), 0);
+  const normalized = [];
+  for (const line of lines || []) {
+    const qty = Number(line.qty);
+    const unit = Number(line.unit_price);
+    if (!Number.isFinite(qty) || qty < 0 || !Number.isFinite(unit) || unit < 0) {
+      return { error: "Line amounts must be zero or more." };
+    }
+    const amount = Math.round((qty * unit + Number.EPSILON) * 100) / 100;
+    normalized.push({
+      label: String(line.label || "Item").slice(0, 200),
+      qty,
+      unit_price: unit,
+      amount,
+      item_id: line.item_id || null
+    });
+  }
+  const subtotal = normalized.reduce((sum, line) => sum + line.amount, 0);
   const off = Number(discount) || 0;
-  return { subtotal, discount: off, total: Math.max(subtotal - off, 0) };
+  if (!Number.isFinite(off) || off < 0) return { error: "The discount must be zero or more." };
+  return { subtotal, discount: off, total: Math.max(subtotal - off, 0), lines: normalized };
 }
 
 async function listQuotes(env, request, user) {
@@ -840,6 +859,7 @@ async function insertQuoteStatements(env, user, request, payload) {
   const id = payload.id || randomId();
   const number = payload.number;
   const totals = quoteTotals(payload.lines, payload.discount);
+  if (totals.error) return { error: totals.error };
   const now = isoNow();
   const statements = [
     env.DB.prepare(
@@ -848,12 +868,12 @@ async function insertQuoteStatements(env, user, request, payload) {
     ).bind(
       id, number, payload.lead_id || null, payload.request_id || null, payload.event_id || null, payload.client_id || null,
       payload.client_name, payload.contact || "", payload.event_date || null, payload.venue || "", payload.package_id || null,
-      JSON.stringify(payload.lines || []), totals.subtotal, totals.discount, totals.total, payload.status, payload.valid_until || null,
+      JSON.stringify(totals.lines || payload.lines || []), totals.subtotal, totals.discount, totals.total, payload.status, payload.valid_until || null,
       payload.notes || "", now, user.id, payload.is_sample ? 1 : actorSample(user), centsFromPesos(totals.subtotal), centsFromPesos(totals.discount), centsFromPesos(totals.total)
     )
   ];
-  (payload.lines || []).forEach((line, index) => {
-    const qty = Number(line.qty) || 1;
+  (totals.lines || payload.lines || []).forEach((line, index) => {
+    const qty = Number(line.qty) || 0;
     const unit = Number(line.unit_price) || 0;
     statements.push(env.DB.prepare(
       `INSERT INTO quote_lines (id, quote_id, label, qty, unit_price, amount, sort_order, is_sample, unit_price_cents, amount_cents)
@@ -884,6 +904,9 @@ async function createQuote(request, env, user) {
       ? [{ label: "Package", qty: 1, unit_price: Number(body.base_fee || 0) }]
       : [];
   if (!lines.length) return json({ error: "Please add at least one line to the quote." }, 400, request);
+  const checked = quoteTotals(lines, discount.value || 0);
+  if (checked.error) return json({ error: checked.error }, 400, request);
+  lines = checked.lines;
   let sample = actorSample(user);
   if (body.lead_id) {
     const lead = await env.DB.prepare("SELECT is_sample FROM leads WHERE id = ?").bind(body.lead_id).first();
@@ -912,6 +935,7 @@ async function createQuote(request, env, user) {
     valid_until: valid.value,
     notes: notes.value
   });
+  if (built.error) return json({ error: built.error }, 400, request);
   await env.DB.batch(built.statements);
   if (body.lead_id && status.value !== "draft") {
     await env.DB.prepare("UPDATE leads SET status = CASE WHEN status IN ('won','lost') THEN status ELSE 'quoted' END, updated_at = ? WHERE id = ?").bind(isoNow(), body.lead_id).run();
@@ -943,12 +967,15 @@ async function patchQuote(id, request, env, user) {
   if (body.client_name !== undefined) fields.client_name = String(body.client_name || "").trim();
   if (Array.isArray(body.lines)) {
     const totals = quoteTotals(body.lines, body.discount !== undefined ? body.discount : existing.discount);
-    fields.items = JSON.stringify(body.lines);
+    if (totals.error) return json({ error: totals.error }, 400, request);
+    fields.items = JSON.stringify(totals.lines);
     fields.subtotal = totals.subtotal;
     fields.discount = totals.discount;
     fields.total = totals.total;
+    body.lines = totals.lines;
   } else if (body.discount !== undefined) {
     const totals = quoteTotals(JSON.parse(existing.items || "[]"), body.discount);
+    if (totals.error) return json({ error: totals.error }, 400, request);
     fields.discount = totals.discount;
     fields.total = totals.total;
   }
@@ -984,41 +1011,70 @@ async function acceptQuote(id, request, env, user) {
   const date = quote.event_date;
   if (!date) return json({ error: "Please set an event date on the quote before accepting it." }, 400, request);
   const venue = quote.venue || "Any";
-  const taken = await dateVenueTaken(env, date, venue);
+  const taken = await dateVenueTaken(env, date, venue, quote.event_id, quote.is_sample);
   if (taken && !quote.event_id) return json({ error: "That date and venue are already held by another event." }, 409, request);
   const now = isoNow();
   const eventId = quote.event_id || randomId();
   const contractId = randomId();
   const sample = actorSample(user, quote);
+  const terms = "Fifty percent reservation, balance due seven days before the event.";
   return runWithSerialRetry(env, "contracts", sample, request, async (contractNo) => {
-  const statements = [
-    env.DB.prepare("UPDATE quotes SET status = 'accepted', event_id = ?, updated_at = ? WHERE id = ? AND status != 'accepted'").bind(eventId, now, id)
-  ];
+  const statements = [];
   if (!quote.event_id) {
     statements.push(env.DB.prepare(
       `INSERT INTO events (id, date, client, title, type, package, pax, venue, status, fee, deposit, contract_total, quote_id, client_id, package_id, created_at, created_by, is_sample)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Confirmed', ?, 0, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      eventId, date, quote.client_name, quote.venue ? `${quote.client_name} event` : "Booked event",
-      "Other", null, null, venue, quote.total, quote.total, quote.id, quote.client_id, quote.package_id, now, user.id, quote.is_sample || 0
-    ));
+       SELECT ?, q.event_date, q.client_name,
+              CASE WHEN IFNULL(q.venue, '') != '' AND q.venue != 'Any' THEN q.client_name || ' event' ELSE 'Booked event' END,
+              'Other', NULL, NULL, CASE WHEN IFNULL(q.venue, '') != '' THEN q.venue ELSE 'Any' END,
+              'Confirmed', q.total, 0, q.total, q.id, q.client_id, q.package_id, ?, ?, q.is_sample
+       FROM quotes q
+       WHERE q.id = ? AND q.status != 'accepted' AND IFNULL(q.event_id, '') = ''
+         AND NOT EXISTS (SELECT 1 FROM events e WHERE e.id = ? OR e.quote_id = q.id)
+         AND NOT EXISTS (
+           SELECT 1 FROM events e
+           WHERE e.date = q.event_date
+             AND e.status IN ('Confirmed', 'Tentative', 'Setup', 'Booked')
+             AND IFNULL(e.is_sample, 0) = IFNULL(q.is_sample, 0)
+             AND e.id != ?
+             AND (
+               CASE
+                 WHEN IFNULL(q.venue, '') IN ('', 'Any') THEN 1
+                 WHEN e.venue = q.venue OR e.venue = 'Any' THEN 1
+                 ELSE 0
+               END
+             ) = 1
+         )`
+    ).bind(eventId, now, user.id, id, eventId, eventId));
+    statements.push(env.DB.prepare(
+      "UPDATE quotes SET status = 'accepted', event_id = ?, updated_at = ? WHERE id = ? AND status != 'accepted' AND EXISTS (SELECT 1 FROM events e WHERE e.id = ? AND e.quote_id = quotes.id)"
+    ).bind(eventId, now, id, eventId));
   } else {
     statements.push(env.DB.prepare("UPDATE events SET quote_id = ?, contract_total = ?, fee = IFNULL(fee, ?), updated_at = ? WHERE id = ?").bind(id, quote.total, quote.total, now, eventId));
+    statements.push(env.DB.prepare("UPDATE quotes SET status = 'accepted', event_id = ?, updated_at = ? WHERE id = ? AND status != 'accepted'").bind(eventId, now, id));
   }
   statements.push(env.DB.prepare(
     `INSERT INTO contracts (id, number, quote_id, event_id, client_id, client_name, event_date, venue, total, deposit_due, terms, status, created_at, created_by, is_sample, total_cents, deposit_due_cents)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?)`
-  ).bind(contractId, contractNo, id, eventId, quote.client_id, quote.client_name, date, venue, quote.total, Math.round((quote.total || 0) * 0.5), "Fifty percent reservation, balance due seven days before the event.", now, user.id, quote.is_sample || 0, centsFromPesos(quote.total), centsFromPesos(Math.round((quote.total || 0) * 0.5))));
-  if (quote.lead_id) {
-    statements.push(env.DB.prepare("UPDATE leads SET status = 'won', updated_at = ? WHERE id = ?").bind(now, quote.lead_id));
-  }
-  statements.push(auditStmt(env, user, "accept", "quotes", id, `Event ${eventId} contract ${contractNo}`, request, quote.is_sample));
+     SELECT ?, ?, q.id, q.event_id, q.client_id, q.client_name, q.event_date,
+            CASE WHEN IFNULL(q.venue, '') != '' THEN q.venue ELSE 'Any' END,
+            q.total, CAST(ROUND(IFNULL(q.total, 0) * 0.5) AS INTEGER), ?, 'draft', ?, ?, q.is_sample,
+            CAST(ROUND(IFNULL(q.total, 0) * 100) AS INTEGER), CAST(ROUND(IFNULL(q.total, 0) * 50) AS INTEGER)
+     FROM quotes q
+     WHERE q.id = ? AND q.status = 'accepted' AND q.event_id IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM contracts c WHERE c.quote_id = q.id)`
+  ).bind(contractId, contractNo, terms, now, user.id, id));
   const results = await env.DB.batch(statements);
-  const changes = results[0] && results[0].meta && results[0].meta.changes;
-  if (changes !== 1 && quote.status !== "accepted") {
-    return json({ error: "This quote could not be accepted. It may have just changed." }, 409, request);
+  const quoteChanges = results[1] && results[1].meta && results[1].meta.changes;
+  if (quoteChanges !== 1) {
+    return json({ error: "This quote could not be accepted. The date may already be held, or it was just accepted." }, 409, request);
   }
-  return json({ ok: true, eventId, contractId, quote: await env.DB.prepare("SELECT * FROM quotes WHERE id = ?").bind(id).first() }, 200, request);
+  const follow = [];
+  if (quote.lead_id) {
+    follow.push(env.DB.prepare("UPDATE leads SET status = 'won', updated_at = ? WHERE id = ?").bind(now, quote.lead_id));
+  }
+  follow.push(auditStmt(env, user, "accept", "quotes", id, `Event ${eventId} contract ${contractNo}`, request, quote.is_sample));
+  await env.DB.batch(follow);
+  const accepted = await env.DB.prepare("SELECT * FROM quotes WHERE id = ?").bind(id).first();
+  return json({ ok: true, eventId: accepted.event_id || eventId, contractId, quote: accepted }, 200, request);
   });
 }
 
@@ -2145,12 +2201,23 @@ async function eventProfitList(env, request, user) {
 }
 
 async function eventProfitOne(env, request, user, id) {
-  const list = await eventProfitList(env, { url: `https://x.local/api/accounting/event-profit?sample=1` }, user);
-  const data = await list.json();
-  const row = (data.events || []).find((item) => item.event_id === id);
-  if (!row) return json({ error: "Event not found." }, 404, request);
-  const expenses = await listBy(env, request, "SELECT * FROM expenses WHERE event_id = ? AND voided_at IS NULL ORDER BY date", [id]);
-  return json({ event: row, expenses }, 200, request);
+  const balance = await env.DB.prepare("SELECT * FROM v_event_balance WHERE event_id = ?").bind(id).first();
+  if (!balance) return json({ error: "Event not found." }, 404, request);
+  const expenseRows = await listBy(env, request, "SELECT * FROM expenses WHERE event_id = ? AND voided_at IS NULL ORDER BY date", [id]);
+  const laborRows = await listBy(env, request, `SELECT SUM(IFNULL(p.daily_rate, IFNULL(p.rate, 0))) AS labor
+    FROM shifts s LEFT JOIN staff_profiles p ON p.user_id = s.staff_id WHERE s.event_id = ?`, [id]);
+  const direct = expenseRows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+  const laborCost = Number(laborRows[0] && laborRows[0].labor) || 0;
+  const contract = Number(balance.contract_total) || 0;
+  const event = {
+    ...balance,
+    direct,
+    labor: laborCost,
+    consumables: 0,
+    margin: contract - direct - laborCost,
+    collected: Number(balance.collected) || 0
+  };
+  return json({ event, expenses: expenseRows.map((row) => withPesos(row, ["amount"])) }, 200, request);
 }
 
 async function listHrStaff(env, request, user) {

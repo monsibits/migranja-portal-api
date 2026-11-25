@@ -1008,23 +1008,24 @@ async function runScheduledSweeps(env) {
   return { expired, completed, lastSweepAt: now };
 }
 
-async function dateVenueTaken(env, date, venue, exceptId) {
+async function dateVenueTaken(env, date, venue, exceptId, isSample = 0) {
   const venueValue = venue || "Any";
   const except = exceptId || "";
+  const sampleFlag = isSample ? 1 : 0;
   if (venueValue === "Any") {
     return env.DB.prepare(
       `SELECT id FROM events
        WHERE date = ? AND status IN ('Confirmed', 'Tentative', 'Setup', 'Booked')
-         AND IFNULL(is_sample, 0) = 0 AND id != ?
+         AND IFNULL(is_sample, 0) = ? AND id != ?
        LIMIT 1`
-    ).bind(date, except).first();
+    ).bind(date, sampleFlag, except).first();
   }
   return env.DB.prepare(
     `SELECT id FROM events
      WHERE date = ? AND status IN ('Confirmed', 'Tentative', 'Setup', 'Booked')
-       AND IFNULL(is_sample, 0) = 0 AND (venue = ? OR venue = 'Any') AND id != ?
+       AND IFNULL(is_sample, 0) = ? AND (venue = ? OR venue = 'Any') AND id != ?
      LIMIT 1`
-  ).bind(date, venueValue, except).first();
+  ).bind(date, sampleFlag, venueValue, except).first();
 }
 
 async function bumpFailLimit(env, key, max) {
@@ -1349,8 +1350,12 @@ async function changePassword(request, env, user) {
 
 function eventColumns(role) {
   const base = "e.id, e.date, e.client, e.title, e.type, e.package, e.pax, e.venue, e.status, e.from_request, e.created_at, e.created_by, e.is_sample";
-  if (role === "owner") return `${base}, e.fee, e.deposit, e.contract_total`;
+  if (role === "owner") return `${base}, e.fee, e.deposit, e.contract_total, IFNULL(b.collected, 0) AS collected, IFNULL(b.balance, 0) AS balance`;
   return base;
+}
+
+function eventsFromSql(role) {
+  return `SELECT ${eventColumns(role)} FROM events e LEFT JOIN v_event_balance b ON b.event_id = e.id`;
 }
 
 async function listEvents(env, request, user) {
@@ -1361,7 +1366,7 @@ async function listEvents(env, request, user) {
   const from = url.searchParams.get("from") || "";
   const to = url.searchParams.get("to") || "";
   const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 200, 1), 500);
-  let sql = `SELECT ${eventColumns(user.role)} FROM events e`;
+  let sql = eventsFromSql(user.role);
   const clauses = [];
   const params = [];
   if (status && EVENT_STATUSES.includes(status)) {
@@ -1456,7 +1461,7 @@ async function createEvent(request, env, user) {
   const ev = parsed.value;
   ev.status = ev.status || "Confirmed";
   if (HELD_STATUSES.has(ev.status)) {
-    const taken = await dateVenueTaken(env, ev.date, ev.venue);
+    const taken = await dateVenueTaken(env, ev.date, ev.venue, null, ev.is_sample || (user && user.is_sample));
     if (taken) return json({ error: "That date and venue are already held by another event." }, 409, request);
   }
   const id = randomId();
@@ -1467,7 +1472,7 @@ async function createEvent(request, env, user) {
     ).bind(id, ev.date, ev.client, ev.title, ev.type, ev.package || "", ev.pax, ev.venue, ev.status, ev.fee, ev.deposit, isoNow(), user.id),
     auditStmt(env, user, "create", "events", id, `${ev.date} ${ev.client}`, request)
   ]);
-  const event = await env.DB.prepare(`SELECT ${eventColumns(user.role)} FROM events e WHERE e.id = ?`).bind(id).first();
+  const event = await env.DB.prepare(`${eventsFromSql(user.role)} WHERE e.id = ?`).bind(id).first();
   return json({ event }, 201, request);
 }
 
@@ -1484,12 +1489,12 @@ async function patchEvent(id, request, env, user) {
   const nextVenue = ev.venue || existing.venue;
   const nextStatus = ev.status || existing.status;
   if (HELD_STATUSES.has(nextStatus)) {
-    const taken = await dateVenueTaken(env, nextDate, nextVenue, id);
+    const taken = await dateVenueTaken(env, nextDate, nextVenue, id, existing.is_sample);
     if (taken) return json({ error: "That date and venue are already held by another event." }, 409, request);
   }
   const fields = Object.keys(ev);
   if (!fields.length) {
-    const event = await env.DB.prepare(`SELECT ${eventColumns(user.role)} FROM events e WHERE e.id = ?`).bind(id).first();
+    const event = await env.DB.prepare(`${eventsFromSql(user.role)} WHERE e.id = ?`).bind(id).first();
     return json({ event }, 200, request);
   }
   const sets = fields.map((field) => `${field} = ?`);
@@ -1499,7 +1504,7 @@ async function patchEvent(id, request, env, user) {
     env.DB.prepare(`UPDATE events SET ${sets.join(", ")} WHERE id = ?`).bind(...values),
     auditStmt(env, user, ev.status === "Cancelled" ? "cancel" : "update", "events", id, JSON.stringify(ev), request, existing.is_sample)
   ]);
-  const event = await env.DB.prepare(`SELECT ${eventColumns(user.role)} FROM events e WHERE e.id = ?`).bind(id).first();
+  const event = await env.DB.prepare(`${eventsFromSql(user.role)} WHERE e.id = ?`).bind(id).first();
   return json({ event }, 200, request);
 }
 
@@ -1530,7 +1535,7 @@ async function decideRequest(id, request, env, user) {
   if (!req || req.status !== "pending") return json({ error: "This request is no longer pending." }, 409, request);
   const now = isoNow();
   if (decision === "approved") {
-    const taken = await dateVenueTaken(env, req.date, req.venue);
+    const taken = await dateVenueTaken(env, req.date, req.venue, null, req.is_sample);
     if (taken) return json({ error: "That date and venue are already held by another event." }, 409, request);
     const eventId = randomId();
     try {
@@ -1895,21 +1900,25 @@ async function createAnnouncement(request, env, user) {
 
 async function listFinances(env, request) {
   const { results } = await env.DB.prepare(
-    "SELECT id, date, client, title, fee, deposit, status, is_sample FROM events WHERE status != 'Cancelled' ORDER BY date ASC"
+    `SELECT event_id AS id, date, client, title, status, is_sample,
+            contract_total, collected, balance
+     FROM v_event_balance WHERE status != 'Cancelled' ORDER BY date ASC`
   ).all();
   const events = results || [];
   const real = events.filter((event) => !event.is_sample);
   const sample = events.filter((event) => event.is_sample);
   const sum = (rows) => ({
-    fees: rows.reduce((total, event) => total + (event.fee || 0), 0),
-    deposits: rows.reduce((total, event) => total + (event.deposit || 0), 0)
+    fees: rows.reduce((total, event) => total + (event.contract_total || 0), 0),
+    collected: rows.reduce((total, event) => total + (event.collected || 0), 0),
+    deposits: rows.reduce((total, event) => total + (event.collected || 0), 0),
+    balance: rows.reduce((total, event) => total + (event.balance || 0), 0)
   });
   const realSum = sum(real);
   const sampleSum = sum(sample);
   return json({
     events,
-    totals: { ...realSum, balance: realSum.fees - realSum.deposits },
-    sampleTotals: { ...sampleSum, balance: sampleSum.fees - sampleSum.deposits },
+    totals: realSum,
+    sampleTotals: sampleSum,
     includesSample: sample.length > 0
   }, 200, request);
 }
@@ -2038,38 +2047,61 @@ async function cleanupSmoke(request, env, user) {
   if (!originAllowed(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
   if (!user || !user.is_sample) return json({ error: "Only a sample owner can clean up smoke records." }, 403, request);
   const body = await readJson(request);
+  const runId = String((body && body.run_id) || "").trim();
+  if (!runId || runId.length < 8 || !/^SMK-[A-Za-z0-9-]+$/.test(runId)) {
+    return json({ error: "Please send the smoke run id." }, 400, request);
+  }
   if (!body || !Array.isArray(body.records)) return json({ error: "Please send the smoke records to remove." }, 400, request);
   const tables = {
-    clients: "clients",
-    leads: "leads",
-    leave_requests: "leave_requests",
-    areas: "areas",
-    hk_templates: "hk_templates",
-    hk_template_items: "hk_template_items",
-    inventory_items: "inventory_items",
-    inventory_moves: "inventory_moves",
-    expenses: "expenses"
+    clients: { table: "clients", idCol: "id" },
+    leads: { table: "leads", idCol: "id" },
+    leave_requests: { table: "leave_requests", idCol: "id" },
+    areas: { table: "areas", idCol: "id" },
+    hk_templates: { table: "hk_templates", idCol: "id" },
+    hk_template_items: { table: "hk_template_items", idCol: "template_id" },
+    inventory_items: { table: "inventory_items", idCol: "id" },
+    inventory_moves: { table: "inventory_moves", idCol: "item_id" },
+    expenses: { table: "expenses", idCol: "id" },
+    quotes: { table: "quotes", idCol: "id" },
+    quote_lines: { table: "quote_lines", idCol: "quote_id" },
+    contracts: { table: "contracts", idCol: "id" },
+    events: { table: "events", idCol: "id" },
+    payments: { table: "payments", idCol: "id" }
   };
+  const deleteOrder = ["quote_lines", "hk_template_items", "inventory_moves", "payments", "contracts", "events", "quotes", "expenses", "inventory_items", "leave_requests", "leads", "clients", "areas", "hk_templates"];
+  const records = body.records.slice(0, 80).slice().sort((a, b) => {
+    const ai = deleteOrder.indexOf(a && a.table);
+    const bi = deleteOrder.indexOf(b && b.table);
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+  });
   let removed = 0;
-  for (const rec of body.records.slice(0, 50)) {
-    const table = tables[rec && rec.table];
+  const audits = [];
+  for (const rec of records) {
+    const spec = tables[rec && rec.table];
     const id = rec && rec.id;
-    if (!table || !id) continue;
-    let sql = null;
-    if (table === "clients") sql = "DELETE FROM clients WHERE id = ? AND IFNULL(is_sample,0)=1";
-    else if (table === "leads") sql = "DELETE FROM leads WHERE id = ? AND IFNULL(is_sample,0)=1";
-    else if (table === "leave_requests") sql = "DELETE FROM leave_requests WHERE id = ? AND IFNULL(is_sample,0)=1";
-    else if (table === "areas") sql = "DELETE FROM areas WHERE id = ? AND IFNULL(is_sample,0)=1";
-    else if (table === "hk_templates") sql = "DELETE FROM hk_templates WHERE id = ? AND IFNULL(is_sample,0)=1";
-    else if (table === "hk_template_items") sql = "DELETE FROM hk_template_items WHERE template_id = ? AND IFNULL(is_sample,0)=1";
-    else if (table === "inventory_items") sql = "DELETE FROM inventory_items WHERE id = ? AND IFNULL(is_sample,0)=1";
-    else if (table === "inventory_moves") sql = "DELETE FROM inventory_moves WHERE item_id = ? AND IFNULL(is_sample,0)=1";
-    else if (table === "expenses") sql = "DELETE FROM expenses WHERE id = ? AND IFNULL(is_sample,0)=1";
-    if (!sql) continue;
-    const result = await env.DB.prepare(sql).bind(id).run();
-    removed += (result && result.meta && result.meta.changes) || 0;
+    if (!spec || !id) continue;
+    const rows = (await env.DB.prepare(`SELECT * FROM ${spec.table} WHERE ${spec.idCol} = ? AND IFNULL(is_sample,0)=1`).bind(id).all()).results || [];
+    let tagged = rows.filter((row) => JSON.stringify(row).includes(runId));
+    if (!tagged.length) {
+      let parentSql = null;
+      if (spec.table === "inventory_moves") parentSql = "SELECT * FROM inventory_items WHERE id = ? AND IFNULL(is_sample,0)=1";
+      else if (spec.table === "hk_template_items") parentSql = "SELECT * FROM hk_templates WHERE id = ? AND IFNULL(is_sample,0)=1";
+      else if (spec.table === "quote_lines") parentSql = "SELECT * FROM quotes WHERE id = ? AND IFNULL(is_sample,0)=1";
+      if (parentSql) {
+        const parent = await env.DB.prepare(parentSql).bind(id).first();
+        if (parent && JSON.stringify(parent).includes(runId)) tagged = rows.length ? rows : [parent];
+      }
+    }
+    if (!tagged.length) continue;
+    const result = await env.DB.prepare(`DELETE FROM ${spec.table} WHERE ${spec.idCol} = ? AND IFNULL(is_sample,0)=1`).bind(id).run();
+    const changes = (result && result.meta && result.meta.changes) || 0;
+    if (changes) {
+      removed += changes;
+      audits.push(auditStmt(env, user, "smoke-cleanup", spec.table, id, `run ${runId}`, request, 1));
+    }
   }
-  return json({ ok: true, removed }, 200, request);
+  if (audits.length) await env.DB.batch(audits);
+  return json({ ok: true, removed, run_id: runId }, 200, request);
 }
 
 async function sampleStatus(env, request) {
@@ -2161,6 +2193,10 @@ async function findSampleBlockers(env) {
 
 async function removeSample(request, env, user) {
   if (!originAllowed(request)) return json({ error: "This request is not allowed from that page." }, 403, request);
+  const body = await readJson(request);
+  if (!body || body.confirm !== "REMOVE") {
+    return json({ error: "Type REMOVE to confirm that you want to delete all sample records." }, 400, request);
+  }
   const found = await findSampleBlockers(env);
   if (found.length) {
     return json({
@@ -2226,6 +2262,25 @@ async function listAudit(env, request) {
   return json({ entries: results || [] }, 200, request);
 }
 
+
+async function exportIncludesSample(env) {
+  const row = await env.DB.prepare(
+    `SELECT 1 AS ok FROM events WHERE IFNULL(is_sample,0)=1
+     UNION SELECT 1 FROM payments WHERE IFNULL(is_sample,0)=1
+     UNION SELECT 1 FROM expenses WHERE IFNULL(is_sample,0)=1
+     UNION SELECT 1 FROM quotes WHERE IFNULL(is_sample,0)=1
+     LIMIT 1`
+  ).first();
+  return Boolean(row);
+}
+
+function tagExportRows(rows) {
+  return (rows || []).map((row) => ({
+    ...row,
+    is_sample: row.is_sample ? "SAMPLE" : ""
+  }));
+}
+
 async function exportReport(url, env, request, user) {
   const table = url.searchParams.get("table") || "";
   const format = url.searchParams.get("format") || "csv";
@@ -2242,12 +2297,15 @@ async function exportReport(url, env, request, user) {
     housekeeping: user.role === "owner" || user.role === "admin"
   };
   if (!allow[table]) return json({ error: "Please pick a report you can download." }, 400, request);
+  const includeSample = await exportIncludesSample(env);
+  const sampleFilter = includeSample ? "" : " AND IFNULL(is_sample,0)=0";
+  const attSampleFilter = includeSample ? "" : " AND IFNULL(attendance.is_sample,0)=0";
   let rows = [];
   let columns = [];
   if (table === "events") {
     const sql = user.role === "owner"
-      ? "SELECT date, client, title, type, package, pax, venue, status, fee, deposit, is_sample FROM events WHERE IFNULL(is_sample,0)=0 ORDER BY date"
-      : "SELECT date, client, title, type, package, pax, venue, status, is_sample FROM events WHERE IFNULL(is_sample,0)=0 ORDER BY date";
+      ? `SELECT date, client, title, type, package, pax, venue, status, fee, deposit, is_sample FROM events WHERE 1=1${sampleFilter} ORDER BY date`
+      : `SELECT date, client, title, type, package, pax, venue, status, is_sample FROM events WHERE 1=1${sampleFilter} ORDER BY date`;
     rows = (await env.DB.prepare(sql).all()).results || [];
     columns = [
       { key: "date", label: "Date" }, { key: "client", label: "Client" }, { key: "title", label: "Title" },
@@ -2259,7 +2317,7 @@ async function exportReport(url, env, request, user) {
     }
   } else if (table === "requests") {
     rows = (await env.DB.prepare(
-      "SELECT date, name, contact, type, package, pax, venue, status, created_at, decline_reason, is_sample FROM requests WHERE IFNULL(is_sample,0)=0 ORDER BY date"
+      `SELECT date, name, contact, type, package, pax, venue, status, created_at, decline_reason, is_sample FROM requests WHERE 1=1${sampleFilter} ORDER BY date`
     ).all()).results || [];
     columns = [
       { key: "date", label: "Event date" }, { key: "name", label: "Name" }, { key: "contact", label: "Contact" },
@@ -2269,9 +2327,9 @@ async function exportReport(url, env, request, user) {
     ];
   } else if (table === "attendance") {
     rows = (await env.DB.prepare(
-      `SELECT attendance.date, u.name AS staff_name, attendance.time_in, attendance.time_out
+      `SELECT attendance.date, u.name AS staff_name, attendance.time_in, attendance.time_out, attendance.is_sample
        FROM attendance LEFT JOIN users u ON u.id = attendance.staff_id
-       WHERE IFNULL(attendance.is_sample,0)=0
+       WHERE 1=1${attSampleFilter}
        ORDER BY attendance.date DESC`
     ).all()).results || [];
     columns = [
@@ -2279,51 +2337,57 @@ async function exportReport(url, env, request, user) {
       { key: "time_in", label: "Time in" }, { key: "time_out", label: "Time out" }
     ];
   } else if (table === "finances") {
+    const finWhere = includeSample ? "status != 'Cancelled'" : "status != 'Cancelled' AND IFNULL(is_sample,0)=0";
     rows = (await env.DB.prepare(
-      "SELECT date, client, title, fee, deposit, status FROM events WHERE IFNULL(is_sample,0)=0 AND status != 'Cancelled' ORDER BY date"
+      `SELECT date, client, title, contract_total, collected, balance, status, is_sample FROM v_event_balance WHERE ${finWhere} ORDER BY date`
     ).all()).results || [];
     columns = [
       { key: "date", label: "Date" }, { key: "client", label: "Client" }, { key: "title", label: "Title" },
-      { key: "fee", label: "Fee" }, { key: "deposit", label: "Deposit" }, { key: "status", label: "Status" }
+      { key: "contract_total", label: "Contract total" }, { key: "collected", label: "Collected" },
+      { key: "balance", label: "Balance" }, { key: "status", label: "Status" }
     ];
   } else if (table === "leads") {
-    rows = (await env.DB.prepare("SELECT name, contact, source, status, event_date, venue, pax, created_at FROM leads WHERE IFNULL(is_sample,0)=0 ORDER BY created_at").all()).results || [];
+    rows = (await env.DB.prepare(`SELECT name, contact, source, status, event_date, venue, pax, created_at, is_sample FROM leads WHERE 1=1${sampleFilter} ORDER BY created_at`).all()).results || [];
     columns = [
       { key: "name", label: "Name" }, { key: "contact", label: "Contact" }, { key: "source", label: "Source" },
       { key: "status", label: "Stage" }, { key: "event_date", label: "Event date" }, { key: "venue", label: "Venue" },
       { key: "pax", label: "Pax" }, { key: "created_at", label: "Created" }
     ];
   } else if (table === "quotes") {
-    rows = (await env.DB.prepare("SELECT number, client_name, event_date, venue, total, status, valid_until FROM quotes WHERE IFNULL(is_sample,0)=0 ORDER BY created_at").all()).results || [];
+    rows = (await env.DB.prepare(`SELECT number, client_name, event_date, venue, total, status, valid_until, is_sample FROM quotes WHERE 1=1${sampleFilter} ORDER BY created_at`).all()).results || [];
     columns = [
       { key: "number", label: "Number" }, { key: "client_name", label: "Client" }, { key: "event_date", label: "Event date" },
       { key: "venue", label: "Venue" }, { key: "total", label: "Total" }, { key: "status", label: "Status" },
       { key: "valid_until", label: "Valid until" }
     ];
   } else if (table === "payments") {
-    rows = (await env.DB.prepare("SELECT receipt_no, client_name, kind, amount, method, received_at, voided_at FROM payments WHERE IFNULL(is_sample,0)=0 ORDER BY received_at").all()).results || [];
+    rows = (await env.DB.prepare(`SELECT receipt_no, client_name, kind, amount, method, received_at, voided_at, is_sample FROM payments WHERE 1=1${sampleFilter} ORDER BY received_at`).all()).results || [];
     columns = [
       { key: "receipt_no", label: "OR" }, { key: "client_name", label: "Client" }, { key: "kind", label: "Kind" },
       { key: "amount", label: "Amount" }, { key: "method", label: "Method" }, { key: "received_at", label: "Received" },
       { key: "voided_at", label: "Voided" }
     ];
   } else if (table === "expenses") {
-    rows = (await env.DB.prepare("SELECT date, category, payee, amount, method, receipt_no FROM expenses WHERE IFNULL(is_sample,0)=0 AND voided_at IS NULL ORDER BY date").all()).results || [];
+    rows = (await env.DB.prepare(`SELECT date, category, payee, amount, method, receipt_no, is_sample FROM expenses WHERE voided_at IS NULL${sampleFilter} ORDER BY date`).all()).results || [];
     columns = [
       { key: "date", label: "Date" }, { key: "category", label: "Category" }, { key: "payee", label: "Payee" },
       { key: "amount", label: "Amount" }, { key: "method", label: "Method" }, { key: "receipt_no", label: "Receipt" }
     ];
   } else if (table === "inventory") {
-    rows = (await env.DB.prepare("SELECT name, sku, category, unit, qty_on_hand, reorder_level FROM inventory_items WHERE IFNULL(is_sample,0)=0 ORDER BY category, name").all()).results || [];
+    rows = (await env.DB.prepare(`SELECT name, sku, category, unit, qty_on_hand, reorder_level, is_sample FROM inventory_items WHERE 1=1${sampleFilter} ORDER BY category, name`).all()).results || [];
     columns = [
       { key: "name", label: "Item" }, { key: "sku", label: "SKU" }, { key: "category", label: "Category" },
       { key: "unit", label: "Unit" }, { key: "qty_on_hand", label: "On hand" }, { key: "reorder_level", label: "Reorder at" }
     ];
   } else if (table === "housekeeping") {
-    rows = (await env.DB.prepare("SELECT title, kind, status, due FROM checklists WHERE IFNULL(is_sample,0)=0 ORDER BY due").all()).results || [];
+    rows = (await env.DB.prepare(`SELECT title, kind, status, due, is_sample FROM checklists WHERE 1=1${sampleFilter} ORDER BY due`).all()).results || [];
     columns = [
       { key: "title", label: "Job" }, { key: "kind", label: "Kind" }, { key: "status", label: "Status" }, { key: "due", label: "Due" }
     ];
+  }
+  if (includeSample) {
+    rows = tagExportRows(rows);
+    columns = columns.concat({ key: "is_sample", label: "Sample" });
   }
   await audit(env, user, "export", table, null, `${format} download`, request);
   if (format === "xlsx") {

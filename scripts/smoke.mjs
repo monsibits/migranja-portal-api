@@ -102,17 +102,18 @@ const ownerToken = users.owner
   ? await login(users.owner.email, users.owner.password, { required: false })
   : null;
 if (!ownerToken) console.log("SKIP  SAMPLE owner unavailable — admin and staff checks still run");
-const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+const runId = `SMK-${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+const stamp = runId;
 const created = [];
 
 const creates = [
-  ["/api/clients", { name: `SAMPLE Smoke Client ${stamp}`, phone: "09000000000", notes: "smoke" }],
-  ["/api/leads", { name: `SAMPLE Smoke Lead ${stamp}`, stage: "new", notes: "smoke" }],
-  ["/api/hr/leave", { kind: "vacation", start_date: "2027-07-01", end_date: "2027-07-02", reason: "SAMPLE smoke leave" }],
-  ["/api/areas", { name: `SAMPLE Smoke Area ${stamp}`, kind: "room", notes: "smoke" }],
-  ["/api/hk/templates", { name: `SAMPLE Smoke Template ${stamp}`, kind: "pre", items: ["Wipe counters"] }],
-  ["/api/inventory/items", { name: `SAMPLE Smoke Item ${stamp}`, category: "supplies", unit: "pc", qty_on_hand: 2, reorder_level: 1 }],
-  ["/api/expenses", { date: "2027-07-01", category: "supplies", amount: 10, notes: "SAMPLE smoke expense" }]
+  ["/api/clients", { name: `SAMPLE Smoke Client ${stamp}`, phone: "09000000000", notes: stamp }],
+  ["/api/leads", { name: `SAMPLE Smoke Lead ${stamp}`, stage: "new", notes: stamp }],
+  ["/api/hr/leave", { kind: "vacation", start_date: "2027-07-01", end_date: "2027-07-02", reason: `SAMPLE smoke leave ${stamp}` }],
+  ["/api/areas", { name: `SAMPLE Smoke Area ${stamp}`, kind: "room", notes: stamp }],
+  ["/api/hk/templates", { name: `SAMPLE Smoke Template ${stamp}`, kind: "pre", items: [`Wipe counters ${stamp}`] }],
+  ["/api/inventory/items", { name: `SAMPLE Smoke Item ${stamp}`, category: "supplies", unit: "pc", qty_on_hand: 2, reorder_level: 1, notes: stamp }],
+  ["/api/expenses", { date: "2027-07-01", category: "supplies", amount: 10, notes: `SAMPLE smoke expense ${stamp}` }]
 ];
 
 if (ownerToken) {
@@ -167,8 +168,54 @@ if (users.staff) {
   await logout(staffToken);
 }
 
+const adminDashToken = await login(users.admin.email, users.admin.password);
+const dash = await request("/api/dashboard", { token: adminDashToken });
+const lowLeak = (((dash.data && dash.data.lowStock) || []).some((row) => Object.prototype.hasOwnProperty.call(row, "unit_cost") || Object.prototype.hasOwnProperty.call(row, "unit_cost_cents")));
+check("admin dashboard low-stock hides unit_cost", dash.status === 200 && !lowLeak, lowLeak ? "unit_cost present" : `HTTP ${dash.status}`);
+await logout(adminDashToken);
+
+if (ownerToken) {
+  const badQuote = await request("/api/quotes", { method: "POST", token: ownerToken, body: { client_name: `SAMPLE Smoke Neg ${stamp}`, event_date: "2028-09-01", venue: "Garden", lines: [{ label: "Bad", qty: 1, unit_price: -10 }] } });
+  check("negative quote amount rejected", badQuote.status === 400, `HTTP ${badQuote.status}`);
+
+  const noConfirm = await request("/api/sample/remove", { method: "POST", token: ownerToken, body: {} });
+  check("remove-sample requires confirm", noConfirm.status === 400, `HTTP ${noConfirm.status}`);
+
+  const profitList = await request("/api/accounting/event-profit", { token: ownerToken });
+  const profitId = ((((profitList.data && profitList.data.events) || [])[0] || {}).event_id);
+  if (profitId) {
+    const one = await request(`/api/accounting/event-profit/${profitId}`, { token: ownerToken });
+    check("owner per-event profit", one.status === 200 && !!(one.data && one.data.event), `HTTP ${one.status}`);
+  } else {
+    check("owner per-event profit", true, "no events to probe");
+  }
+
+  const quote = await request("/api/quotes", { method: "POST", token: ownerToken, body: {
+    client_name: `SAMPLE Smoke Accept ${stamp}`,
+    event_date: "2028-08-19",
+    venue: "The Nook",
+    status: "sent",
+    notes: stamp,
+    lines: [{ label: "Package", qty: 1, unit_price: 50000 }]
+  }});
+  check("create quote for accept race", quote.status === 201, `HTTP ${quote.status}`);
+  const quoteId = quote.data && quote.data.quote && quote.data.quote.id;
+  if (quoteId) {
+    created.push({ table: "quote_lines", id: quoteId });
+    created.push({ table: "quotes", id: quoteId });
+    const accepts = await Promise.all(Array.from({ length: 6 }, () => request(`/api/quotes/${quoteId}/accept`, { method: "POST", token: ownerToken, body: {} })));
+    const ok = accepts.filter((row) => row.status === 200 && row.data && row.data.ok);
+    const conflict = accepts.filter((row) => row.status === 409);
+    check("parallel quote accept is atomic", ok.length === 1 && conflict.length === 5, `ok=${ok.length} 409=${conflict.length} other=${accepts.filter((row) => row.status !== 200 && row.status !== 409).map((row) => row.status).join(",")}`);
+    const eventId = ok[0] && ok[0].data && ok[0].data.eventId;
+    const contractId = ok[0] && ok[0].data && ok[0].data.contractId;
+    if (contractId) created.push({ table: "contracts", id: contractId });
+    if (eventId) created.push({ table: "events", id: eventId });
+  }
+}
+
 if (ownerToken && created.length) {
-  const cleanup = await request("/api/sample/cleanup-smoke", { method: "POST", token: ownerToken, body: { records: created } });
+  const cleanup = await request("/api/sample/cleanup-smoke", { method: "POST", token: ownerToken, body: { run_id: runId, records: created } });
   check("smoke records cleaned up", cleanup.status === 200, `HTTP ${cleanup.status}`);
 }
 if (ownerToken) await logout(ownerToken);
