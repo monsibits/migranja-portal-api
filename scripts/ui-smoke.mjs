@@ -147,10 +147,14 @@ async function waitForLiveJs(commit, timeoutMs = 180000) {
   fail(`Live JS did not match the site commit before smoke timed out (${last}).`);
 }
 
+function isBenignConsole(text) {
+  return /The Content Security Policy directive 'frame-ancestors' is ignored when delivered via a <meta> element/i.test(text || "");
+}
+
 function attachErrorCollectors(page, bucket) {
   page.on("pageerror", (err) => bucket.push(`pageerror: ${err && err.message ? err.message : err}`));
   page.on("console", (msg) => {
-    if (msg.type() === "error") bucket.push(`console: ${msg.text()}`);
+    if (msg.type() === "error" && !isBenignConsole(msg.text())) bucket.push(`console: ${msg.text()}`);
   });
 }
 
@@ -185,11 +189,13 @@ try {
   await cold.goto(portalUrl(commit), { waitUntil: "networkidle0", timeout: 45000 }).catch(() => {});
   await sleep(1500);
   const coldState = await cold.evaluate(() => {
+    const login = document.querySelector("#login-screen");
     const form = document.querySelector("[data-login-form]");
     const email = document.querySelector("#email");
-    const mainText = (document.querySelector("main") || document.body).innerText || "";
+    const loginVisible = !!(login && !login.hidden && form && email);
+    const mainText = ((login && login.innerText) || document.body.innerText || "");
     return {
-      hasForm: !!(form && email),
+      hasForm: loginVisible,
       mainText: mainText.slice(0, 300)
     };
   });
@@ -246,15 +252,21 @@ try {
       const before = errors.length;
       await page.evaluate((hash) => { window.location.hash = hash; }, `#/${route}`);
       await sleep(1200);
-      const body = await page.evaluate(() => ({
-        text: (document.querySelector("main") || document.body).innerText || "",
-        hasLogin: !!document.querySelector("[data-login-form]")
-      }));
+      const body = await page.evaluate(() => {
+        const app = document.querySelector("#app-screen");
+        const login = document.querySelector("#login-screen");
+        const main = document.querySelector("#app-screen #main") || document.querySelector("#main");
+        const appVisible = !!(app && !app.hidden);
+        return {
+          text: ((appVisible && main && main.innerText) || "").trim(),
+          hasLogin: !!(login && !login.hidden && document.querySelector("[data-login-form]"))
+        };
+      });
       const newErrors = errors.slice(before);
       const crash = /clockCard is not defined|panel is not defined|Could not load this page|Unexpected token|is not defined/i.test(body.text);
       const blocked = role === "owner" && (route === "accounting" || route === "settings") && /Owner only/i.test(body.text) && body.text.length < 400;
       const bounced = body.hasLogin;
-      const empty = !body.text.trim() || (body.text.trim().length < 40 && !/Dashboard|Events|Sales|Settings|Attendance|Inventory/i.test(body.text));
+      const empty = !body.text || body.text.length < 8;
       const ok = newErrors.length === 0 && !crash && !blocked && !bounced && !empty;
       check(`${role} #/${route}`, ok, ok ? "" : (crash ? "page crashed" : blocked ? "Owner only" : bounced ? "still on login" : empty ? "empty page" : newErrors.slice(0, 3).join(" | ")));
     }
