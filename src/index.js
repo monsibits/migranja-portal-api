@@ -2194,70 +2194,107 @@ async function cleanupSmoke(request, env, user) {
   if (!runId || runId.length < 8 || !/^SMK-[A-Za-z0-9-]+$/.test(runId)) {
     return json({ error: "Please send the smoke run id." }, 400, request);
   }
-  if (!body || !Array.isArray(body.records)) return json({ error: "Please send the smoke records to remove." }, 400, request);
   const tables = {
     clients: { table: "clients", idCol: "id" },
     leads: { table: "leads", idCol: "id" },
     leave_requests: { table: "leave_requests", idCol: "id" },
     areas: { table: "areas", idCol: "id" },
     hk_templates: { table: "hk_templates", idCol: "id" },
-    hk_template_items: { table: "hk_template_items", idCol: "template_id" },
+    hk_template_items: { table: "hk_template_items", idCol: "id" },
     inventory_items: { table: "inventory_items", idCol: "id" },
-    inventory_moves: { table: "inventory_moves", idCol: "item_id" },
+    inventory_moves: { table: "inventory_moves", idCol: "id" },
     expenses: { table: "expenses", idCol: "id" },
     quotes: { table: "quotes", idCol: "id" },
-    quote_lines: { table: "quote_lines", idCol: "quote_id" },
+    quote_lines: { table: "quote_lines", idCol: "id" },
     contracts: { table: "contracts", idCol: "id" },
     events: { table: "events", idCol: "id" },
     payments: { table: "payments", idCol: "id" },
     purchase_orders: { table: "purchase_orders", idCol: "id" },
-    po_lines: { table: "po_lines", idCol: "po_id" },
+    po_lines: { table: "po_lines", idCol: "id" },
     requests: { table: "requests", idCol: "id" },
-    attendance: { table: "attendance", idCol: "id" }
+    attendance: { table: "attendance", idCol: "id" },
+    event_details: { table: "event_details", idCol: "event_id" },
+    event_item_allocations: { table: "event_item_allocations", idCol: "id" },
+    payment_schedule: { table: "payment_schedule", idCol: "id" }
   };
-  const deleteOrder = ["quote_lines", "hk_template_items", "inventory_moves", "po_lines", "payments", "contracts", "events", "quotes", "purchase_orders", "expenses", "inventory_items", "leave_requests", "leads", "clients", "areas", "hk_templates", "requests", "attendance"];
-  const records = body.records.slice(0, 80).slice().sort((a, b) => {
-    const ai = deleteOrder.indexOf(a && a.table);
-    const bi = deleteOrder.indexOf(b && b.table);
-    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
-  });
+  const deleteOrder = ["quote_lines", "hk_template_items", "inventory_moves", "po_lines", "payment_schedule", "payments", "event_item_allocations", "event_details", "contracts", "events", "quotes", "purchase_orders", "expenses", "inventory_items", "leave_requests", "leads", "clients", "areas", "hk_templates", "requests", "attendance"];
+  const taggedIds = new Map();
+  const add = (table, id) => {
+    if (!table || !id || !tables[table]) return;
+    if (!taggedIds.has(table)) taggedIds.set(table, new Set());
+    taggedIds.get(table).add(String(id));
+  };
+  const records = Array.isArray(body && body.records) ? body.records.slice(0, 80) : [];
+  for (const rec of records) add(rec && rec.table, rec && rec.id);
+
+  const includesRun = (row) => JSON.stringify(row || {}).includes(runId);
+  for (const name of Object.keys(tables)) {
+    const spec = tables[name];
+    const rows = ((await env.DB.prepare(`SELECT * FROM ${spec.table} WHERE IFNULL(is_sample,0)=1`).all()).results) || [];
+    for (const row of rows) {
+      if (includesRun(row)) add(name, row[spec.idCol] || row.id);
+    }
+  }
+  // Children of tagged parents even if the child text lacks the run id.
+  const childOf = [
+    ["quote_lines", "quote_id", "quotes"],
+    ["po_lines", "po_id", "purchase_orders"],
+    ["hk_template_items", "template_id", "hk_templates"],
+    ["inventory_moves", "item_id", "inventory_items"],
+    ["contracts", "quote_id", "quotes"],
+    ["contracts", "event_id", "events"],
+    ["events", "quote_id", "quotes"],
+    ["payments", "quote_id", "quotes"],
+    ["payments", "contract_id", "contracts"],
+    ["payments", "event_id", "events"],
+    ["payment_schedule", "contract_id", "contracts"],
+    ["payment_schedule", "event_id", "events"],
+    ["event_details", "event_id", "events"],
+    ["event_item_allocations", "event_id", "events"]
+  ];
+  for (const [child, fk, parent] of childOf) {
+    const parentIds = [...(taggedIds.get(parent) || [])];
+    if (!parentIds.length) continue;
+    const placeholders = parentIds.map(() => "?").join(",");
+    const idCol = tables[child].idCol;
+    const rows = ((await env.DB.prepare(`SELECT ${idCol} AS id FROM ${child} WHERE ${fk} IN (${placeholders}) AND IFNULL(is_sample,0)=1`).bind(...parentIds).all()).results) || [];
+    for (const row of rows) add(child, row.id);
+  }
+
+  const started = String((body && body.run_started_at) || "").trim();
+  if (started) {
+    const punches = ((await env.DB.prepare("SELECT * FROM attendance WHERE staff_id = ? AND IFNULL(is_sample,0)=1 AND date >= ?").bind(user.id, started.slice(0, 10)).all()).results) || [];
+    for (const punch of punches) {
+      if (`${punch.date || ""}T${punch.time_in || "00:00"}` >= started.slice(0, 16)) add("attendance", punch.id);
+    }
+  }
+
   let removed = 0;
   const audits = [];
-  for (const rec of records) {
-    const spec = tables[rec && rec.table];
-    const id = rec && rec.id;
-    if (!spec || !id) continue;
-    const rows = (await env.DB.prepare(`SELECT * FROM ${spec.table} WHERE ${spec.idCol} = ? AND IFNULL(is_sample,0)=1`).bind(id).all()).results || [];
-    let tagged = rows.filter((row) => JSON.stringify(row).includes(runId));
-    if (!tagged.length) {
-      let parentSql = null;
-      if (spec.table === "inventory_moves") parentSql = "SELECT * FROM inventory_items WHERE id = ? AND IFNULL(is_sample,0)=1";
-      else if (spec.table === "hk_template_items") parentSql = "SELECT * FROM hk_templates WHERE id = ? AND IFNULL(is_sample,0)=1";
-      else if (spec.table === "quote_lines") parentSql = "SELECT * FROM quotes WHERE id = ? AND IFNULL(is_sample,0)=1";
-      else if (spec.table === "po_lines") parentSql = "SELECT * FROM purchase_orders WHERE id = ? AND IFNULL(is_sample,0)=1";
-      if (parentSql) {
-        const parent = await env.DB.prepare(parentSql).bind(id).first();
-        if (parent && JSON.stringify(parent).includes(runId)) tagged = rows.length ? rows : [parent];
+  for (const name of deleteOrder) {
+    for (const id of [...(taggedIds.get(name) || [])]) {
+      const spec = tables[name];
+      const result = await env.DB.prepare(`DELETE FROM ${spec.table} WHERE ${spec.idCol} = ? AND IFNULL(is_sample,0)=1`).bind(id).run();
+      const changes = (result && result.meta && result.meta.changes) || 0;
+      if (changes) {
+        removed += changes;
+        audits.push(auditStmt(env, user, "smoke-cleanup", spec.table, id, `run ${runId}`, request, 1));
       }
-    }
-    if (!tagged.length && spec.table === "attendance") {
-      const punch = rows[0] || await env.DB.prepare("SELECT * FROM attendance WHERE id = ? AND IFNULL(is_sample,0)=1").bind(id).first();
-      const started = String((body && body.run_started_at) || "").trim();
-      if (punch && started && `${punch.date || ""}T${punch.time_in || "00:00"}` >= started.slice(0, 16)) {
-        tagged = [punch];
-      }
-    }
-    if (!tagged.length) continue;
-    const result = await env.DB.prepare(`DELETE FROM ${spec.table} WHERE ${spec.idCol} = ? AND IFNULL(is_sample,0)=1`).bind(id).run();
-    const changes = (result && result.meta && result.meta.changes) || 0;
-    if (changes) {
-      removed += changes;
-      audits.push(auditStmt(env, user, "smoke-cleanup", spec.table, id, `run ${runId}`, request, 1));
     }
   }
   if (audits.length) await env.DB.batch(audits);
-  return json({ ok: true, removed, run_id: runId }, 200, request);
+
+  const remaining = [];
+  for (const name of Object.keys(tables)) {
+    const spec = tables[name];
+    const full = ((await env.DB.prepare(`SELECT * FROM ${spec.table} WHERE IFNULL(is_sample,0)=1`).all()).results) || [];
+    for (const row of full) {
+      if (includesRun(row)) remaining.push({ table: name, id: row[spec.idCol] || row.id });
+    }
+  }
+  return json({ ok: remaining.length === 0, removed, run_id: runId, remaining }, remaining.length ? 409 : 200, request);
 }
+
 
 async function sampleStatus(env, request) {
   const tables = ["users", "events", "requests", "shifts", "tasks", "announcements", "attendance",

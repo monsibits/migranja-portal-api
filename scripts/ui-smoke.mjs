@@ -289,6 +289,35 @@ try {
       const ok = newErrors.length === 0 && !crash && !blocked && !bounced && !empty;
       check(`${role} #/${route}`, ok, ok ? "" : (crash ? "page crashed" : blocked ? "Owner only" : bounced ? "still on login" : empty ? "empty page" : newErrors.slice(0, 3).join(" | ")));
     }
+    if (role === "owner") {
+      for (let i = 0; i < 5; i++) {
+        await page.evaluate(() => { window.location.hash = "#/settings"; });
+        await sleep(30);
+        await page.evaluate(() => { window.location.hash = "#/users"; });
+        await sleep(30);
+      }
+      await sleep(8000);
+      const usersPage = await page.evaluate(() => ({
+        hash: window.location.hash,
+        text: ((document.querySelector("#app-screen #main") || document.querySelector("#main"))?.innerText || "").replace(/\s+/g, " ").trim()
+      }));
+      const usersOk = /#\/users/i.test(usersPage.hash) && /Users/i.test(usersPage.text) && !/Remove sample data/i.test(usersPage.text);
+      check("rapid Settings→Users ends on Users", usersOk, usersOk ? usersPage.hash : `${usersPage.hash} ${usersPage.text.slice(0, 160)}`);
+
+      for (let i = 0; i < 5; i++) {
+        await page.evaluate(() => { window.location.hash = "#/reports"; });
+        await sleep(30);
+        await page.evaluate(() => { window.location.hash = "#/hr"; });
+        await sleep(30);
+      }
+      await sleep(8000);
+      const hrPage = await page.evaluate(() => ({
+        hash: window.location.hash,
+        text: ((document.querySelector("#app-screen #main") || document.querySelector("#main"))?.innerText || "").replace(/\s+/g, " ").trim()
+      }));
+      const hrOk = /#\/hr/i.test(hrPage.hash) && /HR|Leave|Staff|Payroll/i.test(hrPage.text) && !/Period summary|Downloads|Collected/i.test(hrPage.text);
+      check("rapid Reports→HR ends on HR", hrOk, hrOk ? hrPage.hash : `${hrPage.hash} ${hrPage.text.slice(0, 160)}`);
+    }
     await page.close();
     await logout(session.token);
   }

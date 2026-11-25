@@ -81,6 +81,7 @@ function createdRecord(path, data) {
     const row = data[key];
     if (row && row.id) return { table: tableMap[path], id: row.id, is_sample: row.is_sample, path };
   }
+  if (data.id && tableMap[path]) return { table: tableMap[path], id: data.id, is_sample: data.is_sample, path };
   return null;
 }
 
@@ -374,9 +375,10 @@ if (ownerToken) {
   }
 }
 
-if (ownerToken && created.length) {
+if (ownerToken) {
   const cleanup = await request("/api/sample/cleanup-smoke", { method: "POST", token: ownerToken, body: { run_id: runId, run_started_at: runStartedAt, records: created } });
-  check("smoke records cleaned up", cleanup.status === 200, `HTTP ${cleanup.status}`);
+  const leftover = (cleanup.data && cleanup.data.remaining) || [];
+  check("smoke records cleaned up", cleanup.status === 200 && leftover.length === 0, leftover.length ? leftover.map((row) => `${row.table}:${String(row.id || "").slice(0, 8)}`).join(",") : `HTTP ${cleanup.status}`);
 }
 if (ownerToken) await logout(ownerToken);
 
